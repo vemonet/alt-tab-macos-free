@@ -174,6 +174,9 @@ class LicenseManager {
     }
 
     func computeState() -> LicenseState {
+        #if LOCAL_PRO_BUILD
+        return .pro
+        #else
         if keychain.value(account: Self.keychainKeyAccount) != nil {
             let lastValidationResult = defaults.bool(forKey: "lastValidationResult")
             guard lastValidationResult else { return .trialExpired }
@@ -187,6 +190,7 @@ class LicenseManager {
             return .pro
         }
         return computeTrialState()
+        #endif
     }
 
     private func computeTrialState() -> LicenseState {

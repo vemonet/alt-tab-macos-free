@@ -1,0 +1,37 @@
+name: Build local Pro
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.0.1.app/Contents/Developer
+      - name: Show Xcode version
+        run: xcodebuild -version
+      - name: Create self-signed certificate
+        run: scripts/codesign/setup_ci_pr.sh
+      - name: Build local Pro app
+        run: |
+          xcodebuild \
+            -project alt-tab-macos.xcodeproj \
+            -scheme Debug \
+            -configuration Debug \
+            -derivedDataPath DerivedData \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS="DEBUG LOCAL_PRO_BUILD"
+      - name: Verify signature
+        run: codesign --verify --deep --strict --verbose=2 DerivedData/Build/Products/Debug/AltTab.app
+      - name: Package app
+        run: ditto -c -k --keepParent DerivedData/Build/Products/Debug/AltTab.app AltTab-local-pro.zip
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: AltTab-local-pro
+          path: AltTab-local-pro.zip
+          if-no-files-found: error
