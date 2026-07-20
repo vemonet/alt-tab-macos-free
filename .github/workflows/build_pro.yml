@@ -1,4 +1,4 @@
-name: Build local Pro
+name: Build Pro version
 
 on:
   workflow_dispatch:
@@ -24,7 +24,10 @@ jobs:
             -scheme Debug \
             -configuration Debug \
             -derivedDataPath DerivedData \
+            CURRENT_PROJECT_VERSION="11.4.3" \
             SWIFT_ACTIVE_COMPILATION_CONDITIONS="DEBUG LOCAL_PRO_BUILD"
+      - name: Verify bundle version
+        run: test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' DerivedData/Build/Products/Debug/AltTab.app/Contents/Info.plist)" = "11.4.3"
       - name: Verify signature
         run: codesign --verify --deep --strict --verbose=2 DerivedData/Build/Products/Debug/AltTab.app
       - name: Package app
