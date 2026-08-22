@@ -107,6 +107,7 @@ jobs:
           CONFLICTS: ${{ steps.sync.outputs.conflicts }}
         run: |
           gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
             --base master \
             --head "sync/$TAG" \
             --title "chore: merge upstream $TAG (conflicts)" \
@@ -173,7 +174,7 @@ jobs:
           FORCE: ${{ inputs.force }}
         run: |
           # `force` reruns replace the existing release; the tag itself is left in place
-          [ "$FORCE" != "true" ] || gh release delete "$TAG" --yes || true
+          [ "$FORCE" != "true" ] || gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes || true
           cat > release_notes.md <<'NOTES'
           Unsigned build of upstream __TAG__ with Pro features enabled.
 
@@ -187,5 +188,6 @@ jobs:
           NOTES
           sed -i '' "s/__TAG__/$TAG/g" release_notes.md
           gh release create "$TAG" AltTab-Pro.zip \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$TAG (local Pro build)" \
             --notes-file release_notes.md
