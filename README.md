@@ -5,3 +5,16 @@
 <a href="https://jb.gg/OpenSource"><img src="docs/readme/sponsor.svg" alt="Sponsored by JetBrains" width="900"/></a>
 
 </div>
+
+## Fork
+
+This fork adds a GitHub actions workflow that builds an unsigned version of Alt-Tab with Pro features enabled for free.
+
+1. Download and unzip the `.zip` file from [GitHub releases](https://github.com/vemonet/alt-tab-macos-free/releases/latest/download/AltTab-Pro.zip).
+
+2. Since the app is self-signed you'll need tell your mac it's fine:
+
+    ```sh
+    xattr -dr com.apple.quarantine "$HOME/Downloads/AltTab.app"
+    ```
+3. Install `AltTab.app`

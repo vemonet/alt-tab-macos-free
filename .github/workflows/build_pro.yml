@@ -1,0 +1,191 @@
+name: Build Pro version
+
+# Weekly: check upstream for a new release, merge it here, build it with Pro enabled,
+# and publish a mirror release under the same tag.
+#   - clean merge -> master moves forward, tag is mirrored, release is published
+#   - conflict    -> master is left alone, a PR is opened for manual resolution
+# Manual runs can also just build the current branch (uncheck `sync`), with no release.
+on:
+  schedule:
+    - cron: '0 6 * * 1' # every Monday at 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      sync:
+        description: 'Sync the latest upstream release and publish a mirror release'
+        required: false
+        type: boolean
+        default: true
+      tag:
+        description: 'Upstream tag to sync (defaults to the latest upstream release)'
+        required: false
+        type: string
+      force:
+        description: 'Rebuild and republish even if the release already exists here'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM: lwouis/alt-tab-macos
+  SYNC: ${{ github.event_name != 'workflow_dispatch' || inputs.sync }}
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # GITHUB_TOKEN is refused when a push touches .github/workflows/**, which upstream
+          # releases regularly do. Set a SYNC_TOKEN secret (PAT with repo + workflow scopes)
+          # to let those syncs through; without it they fall back to the manual-PR path.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Sync upstream release
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+
+          if [ "$SYNC" != "true" ]; then
+            VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+            echo "version=${VERSION:-0.0.0}" >> "$GITHUB_OUTPUT"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Sync disabled, building the current branch."
+            exit 0
+          fi
+
+          TAG="$INPUT_TAG"
+          [ -n "$TAG" ] || TAG="$(gh release view --repo "$UPSTREAM" --json tagName --jq .tagName)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream release: $TAG"
+
+          if [ "$FORCE" != "true" ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already mirrored, nothing to do."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM.git"
+          git fetch upstream --tags --force
+
+          # Anything that stops us from landing the merge on master lands as a PR instead,
+          # so master is only ever moved by a merge that resolved cleanly and pushed cleanly.
+          if git merge --no-edit -m "chore: merge upstream $TAG" "$TAG" && git push origin HEAD:master; then
+            git tag -f "$TAG"
+            git push origin --force "refs/tags/$TAG"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            CONFLICTS="$(git diff --name-only --diff-filter=U | sed 's/^/- /')"
+            [ -n "$CONFLICTS" ] || CONFLICTS="- (no conflicts; the push to master was rejected)"
+            git merge --abort || true
+            {
+              echo "conflicts<<EOF"
+              echo "$CONFLICTS"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            git push origin --force "refs/tags/$TAG:refs/heads/sync/$TAG"
+          fi
+
+      - name: Open a PR to resolve conflicts by hand
+        if: steps.sync.outputs.conflicts != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.sync.outputs.tag }}
+          CONFLICTS: ${{ steps.sync.outputs.conflicts }}
+        run: |
+          gh pr create \
+            --base master \
+            --head "sync/$TAG" \
+            --title "chore: merge upstream $TAG (conflicts)" \
+            --body "Automatic sync of upstream \`$TAG\` could not land on \`master\`:
+
+          $CONFLICTS
+
+          Resolve locally, then push:
+
+          \`\`\`sh
+          git fetch origin && git checkout master
+          git merge $TAG
+          # resolve, then
+          git push origin master && git push origin --force $TAG
+          \`\`\`
+
+          Re-run this workflow afterwards to publish the mirror release @vemonet"
+
+      - name: Select Xcode
+        if: steps.sync.outputs.build == 'true'
+        run: sudo xcode-select -s /Applications/Xcode_26.0.1.app/Contents/Developer
+      - name: Show Xcode version
+        if: steps.sync.outputs.build == 'true'
+        run: xcodebuild -version
+      - name: Create self-signed certificate
+        if: steps.sync.outputs.build == 'true'
+        run: scripts/codesign/setup_ci_pr.sh
+      - name: Build local Pro app
+        if: steps.sync.outputs.build == 'true'
+        run: |
+          xcodebuild \
+            -project alt-tab-macos.xcodeproj \
+            -scheme Debug \
+            -configuration Debug \
+            -derivedDataPath DerivedData \
+            CURRENT_PROJECT_VERSION="${{ steps.sync.outputs.version }}" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS="DEBUG PRO_BUILD"
+      - name: Verify bundle version
+        if: steps.sync.outputs.build == 'true'
+        run: test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' DerivedData/Build/Products/Debug/AltTab.app/Contents/Info.plist)" = "${{ steps.sync.outputs.version }}"
+      - name: Verify signature
+        if: steps.sync.outputs.build == 'true'
+        run: codesign --verify --deep --strict --verbose=2 DerivedData/Build/Products/Debug/AltTab.app
+      - name: Package app
+        if: steps.sync.outputs.build == 'true'
+        run: ditto -c -k --keepParent DerivedData/Build/Products/Debug/AltTab.app AltTab-Pro.zip
+      # Only for runs that publish no release. upload-artifact always re-zips its input,
+      # so this download is a zip inside a zip; the release asset below is not.
+      # Uploading the .app unzipped instead would drop the framework symlinks and break
+      # the signature, so the nested zip is the lesser evil here.
+      - name: Upload app
+        if: steps.sync.outputs.build == 'true' && steps.sync.outputs.release != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: AltTab-Pro
+          path: AltTab-Pro.zip
+          if-no-files-found: error
+
+      - name: Publish mirror release
+        if: steps.sync.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.sync.outputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          # `force` reruns replace the existing release; the tag itself is left in place
+          [ "$FORCE" != "true" ] || gh release delete "$TAG" --yes || true
+          cat > release_notes.md <<'NOTES'
+          Unsigned build of upstream __TAG__ with Pro features enabled.
+
+          Unzip it, then lift the quarantine flag:
+
+          ```sh
+          xattr -dr com.apple.quarantine "$HOME/Downloads/AltTab.app"
+          ```
+
+          Upstream release notes: https://github.com/lwouis/alt-tab-macos/releases/tag/__TAG__
+          NOTES
+          sed -i '' "s/__TAG__/$TAG/g" release_notes.md
+          gh release create "$TAG" AltTab-Pro.zip \
+            --title "$TAG (local Pro build)" \
+            --notes-file release_notes.md

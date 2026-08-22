@@ -1,3 +1,7 @@
 # Diff PDFs as decompressed text instead of "Binary files differ".
 # Needs a one-time, per-clone: git config diff.pdf.textconv scripts/assets/pdf_textconv.sh
 *.pdf diff=pdf
+
+# Fork-specific: our README additions live at the end of the file, and upstream
+# regenerates the top of it on every release. `union` keeps both sides
+README.md merge=union
