@@ -135,7 +135,7 @@ jobs:
       - name: Create self-signed certificate
         if: steps.sync.outputs.build == 'true'
         run: scripts/codesign/setup_ci_pr.sh
-      - name: Build local Pro app
+      - name: Build AltTab-Pro app
         if: steps.sync.outputs.build == 'true'
         run: |
           xcodebuild \
@@ -189,5 +189,5 @@ jobs:
           sed -i '' "s/__TAG__/$TAG/g" release_notes.md
           gh release create "$TAG" AltTab-Pro.zip \
             --repo "$GITHUB_REPOSITORY" \
-            --title "$TAG (local Pro build)" \
+            --title "$TAG" \
             --notes-file release_notes.md
