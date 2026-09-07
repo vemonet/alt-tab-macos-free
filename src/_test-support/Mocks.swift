@@ -158,6 +158,8 @@ class TilesView {
     static func handleSearchEditingKeyDown(_ event: NSEvent) -> SearchKeyResult {
         return App.app.tilesPanel.tilesView.handleSearchEditingKeyDown(event)
     }
+
+    static func giveTheFieldTheCaretNow() {}
 }
 
 class ControlsTab {

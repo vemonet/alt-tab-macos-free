@@ -141,3 +141,39 @@ final class ExceptionMatcherTests: XCTestCase {
                                                           exceptions: [entry("com.foo", ignore: .always)]))
     }
 }
+
+final class ShortcutExceptionContextResolverTests: XCTestCase {
+    private let process = ProcessGeneration(pid: 7, generation: 1)
+
+    private func window(_ wid: UInt32, fullscreen: Bool, currentSpace: Bool = true)
+        -> FullscreenWindowEvidence {
+        FullscreenWindowEvidence(pid: process.pid, wid: wid, isFullscreen: fullscreen,
+            isOnCurrentSpace: currentSpace)
+    }
+
+    func testExactAttentionUsesOnlyTheAttendedWindowsFullscreenState() {
+        let context = CurrentUserContext.window(WindowIdentity(process: process, wid: 1))
+        XCTAssertFalse(ShortcutExceptionContextResolver.isFullscreen(context, appPid: process.pid,
+            activeWindowIsFullscreen: true,
+            windows: [window(1, fullscreen: false), window(2, fullscreen: true)]))
+    }
+
+    func testExactAttentionRecognizesFullscreenOutsideCurrentSpaceCache() {
+        let context = CurrentUserContext.window(WindowIdentity(process: process, wid: 1))
+        XCTAssertTrue(ShortcutExceptionContextResolver.isFullscreen(context, appPid: process.pid,
+            activeWindowIsFullscreen: false, windows: [window(1, fullscreen: true, currentSpace: false)]))
+    }
+
+    func testUnknownAndAppOnlyAttentionKeepConservativeFallback() {
+        XCTAssertTrue(ShortcutExceptionContextResolver.isFullscreen(.unknown, appPid: process.pid,
+            activeWindowIsFullscreen: false, windows: [window(2, fullscreen: true)]))
+        XCTAssertTrue(ShortcutExceptionContextResolver.isFullscreen(.application(process), appPid: process.pid,
+            activeWindowIsFullscreen: true, windows: []))
+    }
+
+    func testMissingExactWindowKeepsConservativeFallback() {
+        let context = CurrentUserContext.window(WindowIdentity(process: process, wid: 99))
+        XCTAssertTrue(ShortcutExceptionContextResolver.isFullscreen(context, appPid: process.pid,
+            activeWindowIsFullscreen: false, windows: [window(2, fullscreen: true)]))
+    }
+}

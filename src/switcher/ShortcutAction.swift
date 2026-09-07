@@ -25,16 +25,28 @@ enum ShortcutActions {
                 case .closeSwitcher: App.hideUi()
             }
         }),
-        ShortcutAction(id: "closeWindowShortcut", perform: { Windows.selectedWindow()?.close() }),
-        ShortcutAction(id: "minDeminWindowShortcut", perform: { Windows.selectedWindow()?.minDemin() }),
-        ShortcutAction(id: "toggleFullscreenWindowShortcut", perform: { Windows.selectedWindow()?.toggleFullscreen() }),
-        ShortcutAction(id: "quitAppShortcut", perform: { Windows.selectedWindow()?.application.quit() }),
-        ShortcutAction(id: "hideShowAppShortcut", perform: { Windows.selectedWindow()?.application.hideOrShow() }),
+        ShortcutAction(id: "closeWindowShortcut", perform: { onSelectedWindow { $0.close() } }),
+        ShortcutAction(id: "minDeminWindowShortcut", perform: { onSelectedWindow { $0.minDemin() } }),
+        ShortcutAction(id: "toggleFullscreenWindowShortcut", perform: { onSelectedWindow { $0.toggleFullscreen() } }),
+        ShortcutAction(id: "quitAppShortcut", perform: { onSelectedWindow { $0.application.quit() } }),
+        ShortcutAction(id: "hideShowAppShortcut", perform: { onSelectedWindow { $0.application.hideOrShow() } }),
         ShortcutAction(id: "searchShortcut", perform: {
             guard SwitcherSession.isActive else { return }
             TilesView.toggleSearchModeFromShortcut()
         }),
     ]
+
+    /// Acting on a tile is a commitment to THAT window, so from here the selection follows it by id rather
+    /// than being re-derived as the default pick. Every one of these actions reorders the list under the
+    /// open switcher — fullscreen moves the window to its own Space, minimize/hide/quit move the MRU — and
+    /// the default pick means "the second visible window", so it stayed on the SLOT while the window the
+    /// user aimed at slid out of it. Live: F fullscreened the selected window, the list reordered, and a
+    /// second F to undo fullscreened a different app's window instead (QA U-06).
+    private static func onSelectedWindow(_ act: (Window) -> Void) {
+        guard let window = Windows.selectedWindow() else { return }
+        SwitcherSession.current?.userPickedSelection = true
+        act(window)
+    }
 
     private static let byId: [String: ShortcutAction] = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
 

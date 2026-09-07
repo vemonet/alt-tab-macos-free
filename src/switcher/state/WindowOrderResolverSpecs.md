@@ -32,6 +32,14 @@ Decision order:
   alphabetical, then `lastFocusOrder`.
 - Equal facts → not ordered before each other (strict weak ordering, required by `Array.sort`).
 
+## One window per app
+
+The stored `mainWindow` preference now means “show one window per app”; its persisted enum index is unchanged.
+Only windows which passed the active filters are representative candidates. Selection order is exact current
+attention, the still-eligible representative already shown in this switcher session, the app's last confirmed
+attention, cached AX mainness as a cold-start fallback, then MRU with creation order and id as deterministic
+tiebreaks. Current attention may replace the session choice; discovery and grouping churn may not.
+
 ## Test scenarios
 
 Mirrors `WindowOrderResolverTests.swift` 1:1.

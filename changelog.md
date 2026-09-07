@@ -1,3 +1,42 @@
+# [11.6.0](https://github.com/lwouis/alt-tab-macos/compare/v11.5.0...v11.6.0) (2026-09-05)
+
+
+### Bug Fixes
+
+* a closed window may linger in the switcher ([7fbba11](https://github.com/lwouis/alt-tab-macos/commit/7fbba11))
+* a window with tabs may be listed twice after opening a tab ([4df8ba4](https://github.com/lwouis/alt-tab-macos/commit/4df8ba4))
+* alt-tab may do nothing after closing the last window (closes [#5960](https://github.com/lwouis/alt-tab-macos/issues/5960)) ([98e199d](https://github.com/lwouis/alt-tab-macos/commit/98e199d)), closes [#5941](https://github.com/lwouis/alt-tab-macos/issues/5941) [#5941](https://github.com/lwouis/alt-tab-macos/issues/5941) [#5941](https://github.com/lwouis/alt-tab-macos/issues/5941) [#5968](https://github.com/lwouis/alt-tab-macos/issues/5968)
+* an app's floating overlay may be listed as a window ([#5565](https://github.com/lwouis/alt-tab-macos/issues/5565)) ([01a5218](https://github.com/lwouis/alt-tab-macos/commit/01a5218))
+* an unresponsive app may slow down the switcher ([#5803](https://github.com/lwouis/alt-tab-macos/issues/5803)) ([61978a8](https://github.com/lwouis/alt-tab-macos/commit/61978a8))
+* clicking a notification could scramble the order (closes [#5974](https://github.com/lwouis/alt-tab-macos/issues/5974)) ([e72e8be](https://github.com/lwouis/alt-tab-macos/commit/e72e8be))
+* first alt-tab after a pause selects the wrong window (closes [#5977](https://github.com/lwouis/alt-tab-macos/issues/5977)) ([3355d46](https://github.com/lwouis/alt-tab-macos/commit/3355d46))
+* invisible windows may be listed in the switcher ([#6002](https://github.com/lwouis/alt-tab-macos/issues/6002)) ([57edf07](https://github.com/lwouis/alt-tab-macos/commit/57edf07))
+* powerpoint slide show was missing from the switcher (closes [#5983](https://github.com/lwouis/alt-tab-macos/issues/5983)) ([609872b](https://github.com/lwouis/alt-tab-macos/commit/609872b))
+* quitting may re-ask for screen recording permission (closes [#5922](https://github.com/lwouis/alt-tab-macos/issues/5922)) ([79cb555](https://github.com/lwouis/alt-tab-macos/commit/79cb555))
+* rare crash when cycling the switcher as a window closes ([2d38314](https://github.com/lwouis/alt-tab-macos/commit/2d38314))
+* rare crash when displays are reconfigured ([85cc811](https://github.com/lwouis/alt-tab-macos/commit/85cc811))
+* rare crash when quitting the app ([807f6ef](https://github.com/lwouis/alt-tab-macos/commit/807f6ef))
+* shortcut editor may report an unrelated conflict (closes [#5455](https://github.com/lwouis/alt-tab-macos/issues/5455)) ([a694953](https://github.com/lwouis/alt-tab-macos/commit/a694953))
+* tab grouping may be wrong right after tabs change ([#5558](https://github.com/lwouis/alt-tab-macos/issues/5558)) ([3f88dec](https://github.com/lwouis/alt-tab-macos/commit/3f88dec))
+* the first switcher after launch may be empty or incomplete ([72447cd](https://github.com/lwouis/alt-tab-macos/commit/72447cd))
+* the switcher may act on the wrong window ([#5988](https://github.com/lwouis/alt-tab-macos/issues/5988), [#5977](https://github.com/lwouis/alt-tab-macos/issues/5977)) ([5e8c76d](https://github.com/lwouis/alt-tab-macos/commit/5e8c76d))
+* the switcher may lag when entering or leaving search ([#5981](https://github.com/lwouis/alt-tab-macos/issues/5981)) ([96b4cae](https://github.com/lwouis/alt-tab-macos/commit/96b4cae))
+* two windows of an app may fold into one tile ([#5978](https://github.com/lwouis/alt-tab-macos/issues/5978), [#5979](https://github.com/lwouis/alt-tab-macos/issues/5979), [#5854](https://github.com/lwouis/alt-tab-macos/issues/5854)) ([0053f3a](https://github.com/lwouis/alt-tab-macos/commit/0053f3a))
+* window previews may load late while typing in search (closes [#5981](https://github.com/lwouis/alt-tab-macos/issues/5981)) ([8c7d067](https://github.com/lwouis/alt-tab-macos/commit/8c7d067))
+* windows may be wrongly grouped as tabs and hidden (closes [#5954](https://github.com/lwouis/alt-tab-macos/issues/5954)) ([3c0adae](https://github.com/lwouis/alt-tab-macos/commit/3c0adae))
+
+
+### Features
+
+* rework window tracking for a more accurate switcher ([#5988](https://github.com/lwouis/alt-tab-macos/issues/5988), [#5803](https://github.com/lwouis/alt-tab-macos/issues/5803)) ([050ee41](https://github.com/lwouis/alt-tab-macos/commit/050ee41))
+
+
+### Performance Improvements
+
+* fewer scans for windows an app does not list ([5458ceb](https://github.com/lwouis/alt-tab-macos/commit/5458ceb))
+* less CPU spent finding windows on other Spaces ([6a14e73](https://github.com/lwouis/alt-tab-macos/commit/6a14e73))
+* open the switcher faster by cutting redundant system calls ([4e3243d](https://github.com/lwouis/alt-tab-macos/commit/4e3243d))
+
 # [11.5.0](https://github.com/lwouis/alt-tab-macos/compare/v11.4.4...v11.5.0) (2026-08-19)
 
 

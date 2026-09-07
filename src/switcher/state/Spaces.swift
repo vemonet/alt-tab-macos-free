@@ -6,6 +6,7 @@ class Spaces {
     static var visibleSpaces = [CGSSpaceID]()
     static var screenSpacesMap = [ScreenUuid: [CGSSpaceID]]()
     static var idsAndIndexes = [(CGSSpaceID, SpaceIndex)]()
+    private static var queryOrder = QueryIssueOrder()
 
     static func isSingleSpace() -> Bool {
         return idsAndIndexes.count == 1
@@ -32,7 +33,9 @@ class Spaces {
     static func query(_ mainScreenUuid: ScreenUuid?, includeWindowMap: Bool) -> Snapshot {
         let raw = CGSCopyManagedDisplaySpaces(CGS_CONNECTION) as! [NSDictionary]
         // rare scenario: NSScreen.main is nil → no uuid → keep the previous current Space (nil here)
-        let current = mainScreenUuid.map { CGSManagedDisplayGetCurrentSpace(CGS_CONNECTION, $0) }
+        let current = mainScreenUuid.map { uuid in
+            CGSManagedDisplayGetCurrentSpace(CGS_CONNECTION, uuid)
+        }
         var map = [CGWindowID: [CGSSpaceID]]()
         if includeWindowMap {
             // one query per Space, inverted, so N per-window CGSCopySpacesForWindows calls become M per-Space calls
@@ -49,7 +52,12 @@ class Spaces {
     /// MAIN-thread: write the statics from a snapshot. Returns whether topology / visible Spaces / current
     /// Space changed, so callers can skip a re-render when nothing moved.
     @discardableResult
-    static func applyTopology(_ s: Snapshot) -> Bool {
+    static func beginQuery() -> UInt64 {
+        queryOrder.issue()
+    }
+
+    static func applyTopology(_ s: Snapshot, issuedAt: UInt64) -> Bool? {
+        guard queryOrder.accepts(issuedAt) else { return nil }
         let beforeIds = idsAndIndexes.map { $0.0 }
         let beforeVisible = visibleSpaces
         let beforeCurrent = currentSpaceId
@@ -80,7 +88,8 @@ class Spaces {
     /// MAIN-thread synchronous refresh for the rare reactive callers (Space switch, screen change, launch).
     /// Topology only — the per-window map is refreshed off-main in `Applications.syncSpacesState`.
     static func refresh() {
-        applyTopology(query(mainScreenUuid(), includeWindowMap: false))
+        let issuedAt = beginQuery()
+        _ = applyTopology(query(mainScreenUuid(), includeWindowMap: false), issuedAt: issuedAt)
     }
 }
 

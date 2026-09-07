@@ -1,9 +1,8 @@
 import XCTest
 
-/// Pins where MRU slot 0 goes when the window holding it is removed
-/// (`WindowEventReducer.refrontAfterRemovingTheFocusedWindow`). The captured #5346 sequence is replayed
-/// through `TestReducerRunner` because the bug is a sequence, not a single decision; the rule-level
-/// scenarios drive `WindowEventReducer.reduce` directly. See WindowEventReducerFocusSpecs.md.
+/// Pins what may move the window order, and what may not. Sequence-shaped scenarios (a window being born)
+/// are replayed through `TestReducerRunner` because the bug is a sequence rather than a single decision;
+/// rule-level ones drive `WindowEventReducer.reduce` directly. See WindowEventReducerFocusSpecs.md.
 final class WindowEventReducerFocusTests: XCTestCase {
 
     private static let reaperPid: pid_t = 15690
@@ -44,139 +43,7 @@ final class WindowEventReducerFocusTests: XCTestCase {
         state.window(wid)?.lastFocusOrder
     }
 
-    // MARK: - A. The captured #5346 sequence
-
-    /// The reporter's transcribed capture: a dialog opened by a drag (REAPER still in the background) is
-    /// discovered and fronted, the click that dismisses it activates REAPER — so the main window's own 808
-    /// is swallowed as the activation's raise tail — and then the dialog is removed. Slot 0 must not fall
-    /// through to Finder, or every alt-tab lands back on the REAPER window the user is already in.
-    func testDialogClosingLeavesTheFrontmostAppInFront() {
-        let runner = TestReducerRunner(initial: state([
-            window(Self.finderWid, Self.finderPid, "Liebesleid", order: 0),
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 1),
-        ], frontmost: Self.finderPid))
-        runner.run(capturedDialogSteps(withActivation: true))
-        XCTAssertEqual(order(runner.state, Self.reaperMainWid), 0)
-        XCTAssertEqual(order(runner.state, Self.finderWid), 1)
-    }
-
-    /// The same sequence minus the activation: the main window's 808 is then an ordinary focus and bumps on
-    /// its own, so the removal has nothing to repair. Isolates the activation as the trigger.
-    func testTheSameSequenceWithoutTheActivationNeedsNoRepair() {
-        let runner = TestReducerRunner(initial: state([
-            window(Self.finderWid, Self.finderPid, "Liebesleid", order: 0),
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 1),
-        ], frontmost: Self.finderPid))
-        runner.run(capturedDialogSteps(withActivation: false))
-        XCTAssertEqual(order(runner.state, Self.reaperMainWid), 0)
-        XCTAssertEqual(order(runner.state, Self.finderWid), 1)
-    }
-
-    /// The capture, input by input (timestamps are the log's own, in seconds since its first event).
-    private func capturedDialogSteps(withActivation: Bool) -> [TestReducerRunner.Step] {
-        var steps: [TestReducerRunner.Step] = [
-            // 13:28:13.588-.845 — the dialog appears while REAPER is in the background: created at 0×0,
-            // sized a beat later, focused before it is tracked, then discovered.
-            .input(.windowCreated(wid: Self.reaperDialogWid, now: 13.588, inSpaceTransition: false)),
-            .input(.windowMovedOrResized(wid: Self.reaperDialogWid, inSpaceTransition: false)),
-            .input(.windowOrderedIn(wid: Self.reaperDialogWid, now: 13.622, inSpaceTransition: false)),
-            .input(.windowFocused(wid: Self.reaperDialogWid, now: 13.634)),
-            .track(window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 0)),
-            .input(.discoveryLanded(wid: Self.reaperDialogWid, accepted: true, newlyTracked: true,
-                adoptedAsInactiveTab: false, queriedSpaceIds: [4], tabTitles: nil)),
-            // 13:28:14.96 — the click on the dialog's button brings REAPER to the front.
-            .setAppActive(pid: Self.finderPid, isActive: false),
-            .setAppActive(pid: Self.reaperPid, isActive: true),
-            .setFrontmost(pid: Self.reaperPid),
-        ]
-        if withActivation {
-            steps.append(.input(.appActivated(pid: Self.reaperPid, now: 14.960, altTabTargetWid: nil)))
-        }
-        steps += [
-            // 13:28:14.961-.962 — the two 808s, 1 ms apart: the dialog, then the main window.
-            .input(.windowFocused(wid: Self.reaperDialogWid, now: 14.961)),
-            .input(.windowOrderedIn(wid: Self.reaperDialogWid, now: 14.962, inSpaceTransition: false)),
-            .input(.windowFocused(wid: Self.reaperMainWid, now: 14.962)),
-            .input(.windowOrderedIn(wid: Self.reaperMainWid, now: 14.962, inSpaceTransition: false)),
-            // 13:28:16.92-.96 — the dialog goes off-screen and the AX probe confirms it closed.
-            .input(.windowOrderedOut(wid: Self.reaperDialogWid, inSpaceTransition: false)),
-            .input(.livenessConfirmedDead(wid: Self.reaperDialogWid)),
-        ]
-        return steps
-    }
-
-    // MARK: - C. Restoring a minimized window (QA I-11, #5439's shape)
-
-    private static let textEditPid: pid_t = 95772
-    private static let teRestoredWid: CGWindowID = 90112 // the minimized window the user picked
-    private static let teSiblingWid: CGWindowID = 90106  // the one they never touched
-
-    private func restoreState() -> TrackedWindowState {
-        var s = TrackedWindowState()
-        s.windows = [
-            window(Self.finderWid, Self.finderPid, "lwouis", order: 0),
-            window(Self.teRestoredWid, Self.textEditPid, "Untitled", order: 1, isMinimized: true),
-            window(Self.teSiblingWid, Self.textEditPid, "Untitled 2", order: 2),
-        ]
-        s.apps[Self.textEditPid] = TrackedApp(state: ApplicationState(pid: Self.textEditPid,
-            bundleIdentifier: "com.apple.TextEdit", localizedName: "TextEdit", isHidden: false),
-            isActive: false)
-        s.apps[Self.finderPid] = TrackedApp(state: ApplicationState(pid: Self.finderPid,
-            bundleIdentifier: "com.apple.finder", localizedName: "Finder", isHidden: false), isActive: true)
-        s.frontmostPid = Self.finderPid
-        s.visibleSpaces = [4]
-        s.currentSpaceId = 4
-        s.spaceIndexById = [4: 1]
-        return s
-    }
-
-    /// The QA I-11 capture (2026-07-31). AltTab focuses a MINIMIZED window, so it deminiaturizes first —
-    /// and unlike every other AltTab focus, that stirs the app's other windows. macOS answered with a focus
-    /// 808 for the SIBLING 38ms into the activation; with an AltTab activation's empty snapshot that was not
-    /// a raise, so it took slot 0 off the window the user had just restored (#5439's shape).
-    ///
-    /// This pins the reducer end of the fix: `ActivationFocusResolver.onActivation` only knows to keep the
-    /// snapshot because `appActivated` tells it the target was minimized, and the kernel tests cannot prove
-    /// that call site passes it.
-    func testRestoringAMinimizedWindowKeepsItInFrontOfItsSibling() {
-        let runner = TestReducerRunner(initial: restoreState())
-        runner.run([
-            .setAppActive(pid: Self.finderPid, isActive: false),
-            .setAppActive(pid: Self.textEditPid, isActive: true),
-            .setFrontmost(pid: Self.textEditPid),
-            // 02:04:04.833 — our own focus, so the target is known and bumped directly.
-            .input(.appActivated(pid: Self.textEditPid, now: 4.833, altTabTargetWid: Self.teRestoredWid)),
-            // 02:04:04.871 — the deminiaturize tail: the sibling, which the user never asked for.
-            .input(.windowFocused(wid: Self.teSiblingWid, now: 4.871)),
-            .input(.windowOrderedIn(wid: Self.teSiblingWid, now: 4.871, inSpaceTransition: false)),
-            // 02:04:04.874 — the window actually being restored arrives 3ms later.
-            .input(.windowOrderedIn(wid: Self.teRestoredWid, now: 4.874, inSpaceTransition: false)),
-        ])
-        // The restored window takes slot 0 and everything else keeps its relative order: Finder shifts down
-        // to 1, and the sibling — whose focus was swallowed as the tail — does not move at all.
-        XCTAssertEqual(order(runner.state, Self.teRestoredWid), 0)
-        XCTAssertEqual(order(runner.state, Self.finderWid), 1)
-        XCTAssertEqual(order(runner.state, Self.teSiblingWid), 2)
-    }
-
-    /// The same tail against a NON-minimized target must still bump: that is #5785's second alt-tab, where
-    /// muting the sibling's genuine 808 left every following alt-tab on the window the user was already in.
-    /// The two live behaviours differ only by whether AltTab had to deminiaturize.
-    func testFocusingANonMinimizedWindowStillLetsTheSiblingsFocusBump() {
-        var initial = restoreState()
-        initial.windows[1].isMinimized = false
-        let runner = TestReducerRunner(initial: initial)
-        runner.run([
-            .setAppActive(pid: Self.finderPid, isActive: false),
-            .setAppActive(pid: Self.textEditPid, isActive: true),
-            .setFrontmost(pid: Self.textEditPid),
-            .input(.appActivated(pid: Self.textEditPid, now: 4.833, altTabTargetWid: Self.teRestoredWid)),
-            .input(.windowFocused(wid: Self.teSiblingWid, now: 4.871)),
-        ])
-        XCTAssertEqual(order(runner.state, Self.teSiblingWid), 0)
-    }
-
-    // MARK: - B. The rule
+    // MARK: the front of the MRU after a removal (#5346)
 
     /// Another app holds slot 1, but focus never crosses apps because a window closed: the frontmost app's
     /// own next window takes the front, and `.applyFocus` names it so the live model agrees.
@@ -203,6 +70,45 @@ final class WindowEventReducerFocusTests: XCTestCase {
         XCTAssertEqual(order(s, Self.reaperMainWid), 0)
     }
 
+    func testWindowServerDestroyRetiresTheSurfaceBeforeRemovingIt() {
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "Main", order: 0)],
+            frontmost: Self.reaperPid)
+        let effects = WindowEventReducer.reduce(&s, .windowDestroyed(wid: Self.reaperMainWid))
+        XCTAssertEqual(s.window(Self.reaperMainWid)?.lifecycle, .surfaceEnded)
+        let retirement = effects.firstIndex(of: .retireSurface(Self.reaperMainWid))
+        let removal = effects.firstIndex(of: .removeWindow(Self.reaperMainWid))
+        XCTAssertNotNil(retirement)
+        XCTAssertNotNil(removal)
+        XCTAssertLessThan(retirement!, removal!)
+    }
+
+    func testAxElementEndWaitsForCrossSourceReconciliation() {
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "Main", order: 0)],
+            frontmost: Self.reaperPid)
+        let effects = WindowEventReducer.reduce(&s, .axElementEnded(wid: Self.reaperMainWid))
+        XCTAssertEqual(s.window(Self.reaperMainWid)?.lifecycle, .axElementEnded)
+        XCTAssertTrue(effects.contains(.reconcileAxElementEnd(Self.reaperMainWid)))
+        XCTAssertFalse(effects.contains(.removeWindow(Self.reaperMainWid)))
+        _ = WindowEventReducer.reduce(&s, .axElementReconciled(
+            wid: Self.reaperMainWid, verdict: .inconclusive))
+        XCTAssertEqual(s.window(Self.reaperMainWid)?.lifecycle, .replacementPending)
+    }
+
+    func testAxReplacementHealsWhileConfirmedCloseRemoves() {
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "Main", order: 0)],
+            frontmost: Self.reaperPid)
+        _ = WindowEventReducer.reduce(&s, .axElementEnded(wid: Self.reaperMainWid))
+        let healed = WindowEventReducer.reduce(&s, .axElementReconciled(
+            wid: Self.reaperMainWid, verdict: .replacementFound))
+        XCTAssertEqual(s.window(Self.reaperMainWid)?.lifecycle, .alive)
+        XCTAssertFalse(healed.contains(.removeWindow(Self.reaperMainWid)))
+        _ = WindowEventReducer.reduce(&s, .axElementEnded(wid: Self.reaperMainWid))
+        let closed = WindowEventReducer.reduce(&s, .axElementReconciled(
+            wid: Self.reaperMainWid, verdict: .confirmedClosed))
+        XCTAssertEqual(s.window(Self.reaperMainWid)?.lifecycle, .confirmedClosed)
+        XCTAssertTrue(closed.contains(.removeWindow(Self.reaperMainWid)))
+    }
+
     /// The frontmost app's last window closes: there is nothing of its own left to promote, so the global
     /// shift stands (the app is on its way to windowless).
     func testRemovingTheFrontmostAppsOnlyWindowPromotesNothing() {
@@ -226,6 +132,20 @@ final class WindowEventReducerFocusTests: XCTestCase {
         XCTAssertFalse(effects.contains(.applyFocus(Self.reaperMainWid)))
     }
 
+    func testMinimizingTheFocusedWindowPromotesTheFrontmostAppsNextWindow() {
+        var s = state([
+            window(Self.reaperDialogWid, Self.reaperPid, "Dialog", order: 0),
+            window(Self.finderWid, Self.finderPid, "Liebesleid", order: 1),
+            window(Self.reaperMainWid, Self.reaperPid, "Main", order: 2),
+        ], frontmost: Self.reaperPid)
+        s.carried.offScreen.insert(Self.reaperDialogWid)
+        let snapshot = WsWindowSnapshot(wid: Self.reaperDialogWid, position: CGPoint(x: 10, y: 10),
+            size: CGSize(width: 800, height: 600), isFullscreen: false, isVisible: false, isMinimized: true)
+        let effects = WindowEventReducer.reduce(&s, .windowServerStateRead([snapshot]))
+        XCTAssertTrue(effects.contains(.applyFocus(Self.reaperMainWid)))
+        XCTAssertEqual(s.mruFrontWid, Self.reaperMainWid)
+    }
+
     /// An inactive tab is off screen too — what the user sees is its group's representative.
     func testInactiveTabsAreNotPromoted() {
         let backgroundTab: CGWindowID = 4600
@@ -241,194 +161,245 @@ final class WindowEventReducerFocusTests: XCTestCase {
         XCTAssertFalse(effects.contains(.applyFocus(backgroundTab)))
     }
 
-    // MARK: - D. The screen coming back (#5936)
+    // MARK: nothing physical may move the order
 
-    /// The measured burst: waking the display orders EVERY window back in inside one millisecond, with no
-    /// order-out in front of it, so `offScreen` cannot tell the re-show from a raise. Each order-in of the
-    /// active app's windows would otherwise re-front, walking that app's whole set to the top of the MRU in
-    /// burst order — "all my Chrome windows are at the front", after only stepping away.
-    func testTheWakeBurstDoesNotReorderTheMru() {
-        var s = state([
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 0),
-            window(Self.finderWid, Self.finderPid, "Liebesleid", order: 1),
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 2),
-        ], frontmost: Self.reaperPid)
-        _ = WindowEventReducer.reduce(&s, .systemReshow(now: 100, source: .wake))
-        // the burst, 2.03s after the wake notification (measured), every window in the same millisecond
-        for wid in [Self.reaperDialogWid, Self.finderWid, Self.reaperMainWid] {
-            let effects = WindowEventReducer.reduce(&s,
-                .windowOrderedIn(wid: wid, now: 102.03, inSpaceTransition: false))
-            XCTAssertFalse(effects.contains(.applyFocus(wid)), "#\(wid) was re-fronted by the wake burst")
+    /// Finder in front with REAPER's window behind it: the state every rule below starts from.
+    private func twoAppState() -> TrackedWindowState {
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "REAPER", order: 1),
+                       window(Self.finderWid, Self.finderPid, "Finder", order: 0)],
+                      frontmost: Self.finderPid)
+        s.now = 100
+        return s
+    }
+
+    /// **The whole point of the rework.** A raw focus event is the WindowServer saying a window came
+    /// forward. That is not the user going there, and it may not say so.
+    func testAFocusEventCannotMoveTheOrder() {
+        var s = twoAppState()
+        _ = WindowEventReducer.reduce(&s, .windowFocused(wid: Self.reaperMainWid, now: 100))
+        XCTAssertEqual(s.mruFrontWid, Self.finderWid,
+                       "an 808 moved the front; physical evidence is not attention")
+    }
+
+    func testAnOrderInCannotMoveTheOrder() {
+        var s = twoAppState()
+        _ = WindowEventReducer.reduce(&s, .windowOrderedIn(wid: Self.reaperMainWid, now: 100,
+                                                           inSpaceTransition: false))
+        XCTAssertEqual(s.mruFrontWid, Self.finderWid)
+    }
+
+
+    /// A committed decision is the one thing that may claim the user moved.
+    func testCommittedAttentionMovesTheOrder() {
+        var s = twoAppState()
+        let effects = WindowEventReducer.reduce(&s, .attentionCommitted(wid: Self.reaperMainWid,
+                                                                        observed: Self.reaperMainWid, at: 100))
+        XCTAssertEqual(s.mruFrontWid, Self.reaperMainWid)
+        XCTAssertTrue(effects.contains(.refreshUiImmediately(wids: [Self.reaperMainWid, Self.finderWid])))
+    }
+
+    /// A commit naming a window nobody tracks is ignored rather than fabricating one.
+    func testCommittedAttentionForAnUnknownWindowIsIgnored() {
+        var s = twoAppState()
+        let effects = WindowEventReducer.reduce(&s, .attentionCommitted(wid: 999_999, observed: 999_999, at: 100))
+        XCTAssertTrue(effects.isEmpty)
+        XCTAssertEqual(s.mruFrontWid, Self.finderWid)
+    }
+
+    /// **Closing the front window is not a claim about the user.** Something has to take the slot, so this
+    /// repair keeps writing where no attention decision exists. The successor stays inside the same app,
+    /// which is the #5346 rule this test must not disturb.
+    func testAStructuralRepairStillWrites() {
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "REAPER", order: 0),
+                       window(Self.reaperDialogWid, Self.reaperPid, "Dialog", order: 1),
+                       window(Self.finderWid, Self.finderPid, "Finder", order: 2)],
+                      frontmost: Self.reaperPid)
+        s.now = 100
+        _ = WindowEventReducer.reduce(&s, .windowDestroyed(wid: Self.reaperMainWid))
+        XCTAssertEqual(s.mruFrontWid, Self.reaperDialogWid,
+                       "the front window closed and its app's next window did not take the slot")
+    }
+
+    // MARK: a window being born
+
+    /// The birth sequence the WindowServer actually emits, from the live capture: a create, a join of the
+    /// visible Space, then discovery once the OS has sized the window (it is published at 0×0 first).
+    private func birthSteps(_ wid: CGWindowID, _ pid: pid_t, _ title: String) -> [TestReducerRunner.Step] {
+        [.input(.windowCreated(wid: wid, now: 100, inSpaceTransition: false)),
+         .input(.spaceMembershipChanged(wid: wid, spaceId: 4, added: true, now: 100,
+                                        inSpaceTransition: false)),
+         .track(window(wid, pid, title, order: 9)),
+         .input(.discoveryLanded(wid: wid, accepted: true, newlyTracked: true, adoptedAsInactiveTab: false,
+                                 queriedSpaceIds: [4], isOrderedIn: true, tabTitles: nil, tabGroupToken: nil))]
+    }
+
+    /// **A window being born is not the user going to it**, seen live. The user is in Finder while an app
+    /// finishes launching behind them; its windows must be discovered without taking the front. The join of
+    /// the visible Space is what used to front them: it asserts a promotion, which is right for a REUSED wid
+    /// arriving with no create event (a tab switch mints no create) and wrong for every birth.
+    func testAWindowBornInTheBackgroundDoesNotTakeTheFront() {
+        var s = state([window(Self.finderWid, Self.finderPid, "Finder", order: 0)], frontmost: Self.finderPid)
+        s.now = 100
+        let harness = TestReducerRunner(initial: s)
+        harness.run(birthSteps(Self.reaperDialogWid, Self.reaperPid, "Untitled"))
+        XCTAssertEqual(harness.state.mruFrontWid, Self.finderWid,
+                       "a window opening behind the user took the front from where they actually were")
+        XCTAssertNotNil(harness.state.window(Self.reaperDialogWid), "and it must still be discovered")
+    }
+
+    /// The same rule when the born window belongs to the app the user is ALREADY in, seen live: twenty
+    /// windows opening at once is not twenty visits, so the window they were on keeps the front. Being in
+    /// the app is what makes this the harder half — the frontmost-app test the circumstantial promotion
+    /// applies would pass here.
+    func testABurstOfWindowsBornInTheFrontmostAppDoesNotMoveTheFront() {
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "REAPER", order: 0),
+                       window(Self.finderWid, Self.finderPid, "Finder", order: 1)],
+                      frontmost: Self.reaperPid)
+        s.now = 100
+        let harness = TestReducerRunner(initial: s)
+        for (i, wid) in [CGWindowID(5001), 5002, 5003].enumerated() {
+            harness.run(birthSteps(wid, Self.reaperPid, "Burst \(i)"))
         }
-        XCTAssertEqual(order(s, Self.reaperDialogWid), 0)
-        XCTAssertEqual(order(s, Self.finderWid), 1)
-        XCTAssertEqual(order(s, Self.reaperMainWid), 2)
+        XCTAssertEqual(harness.state.mruFrontWid, Self.reaperMainWid,
+                       "windows being born in the frontmost app moved the front off the window the user was on")
     }
 
-    /// The capture that showed the damage in full (21:39:01, macOS 26): opening Mission Control emits the
-    /// same burst 12ms after the Dock's `AXExposeShowAllWindows`, and the frontmost app's three windows —
-    /// sitting at MRU 0, 2 and 3 — were all re-fronted, in burst order. Nothing else was in flight: no Space
-    /// transition, no activation, no lock, no sleep. Just Mission Control.
-    func testTheMissionControlBurstDoesNotReorderTheMru() {
-        let reaperThirdWid: CGWindowID = 4601
+    // MARK: tabs — the app naming one of its own tabs
+
+    /// **A tab switch is an app naming a background tab.** Attention lands on the tile that stands for the
+    /// group, so the driver maps the named tab to the current representative; the fact that it named a
+    /// DIFFERENT member is the switch itself. Without moving the representative first, the order gets bumped
+    /// and the tile keeps showing the tab the user just left.
+    func testNamingABackgroundTabMovesTheGroupRepresentative() {
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "Tab A", order: 0),
+                       window(Self.reaperDialogWid, Self.reaperPid, "Tab B", order: 1)],
+                      frontmost: Self.reaperPid)
+        s.now = 100
+        _ = s.formGroup([Self.reaperMainWid, Self.reaperDialogWid], representative: Self.reaperMainWid,
+                        reason: "test")
+        _ = WindowEventReducer.reduce(&s, .attentionCommitted(wid: Self.reaperMainWid,
+                                                              observed: Self.reaperDialogWid, at: 100))
+        let group = s.groups.groupId(of: Self.reaperDialogWid)
+        XCTAssertEqual(group.flatMap { s.groups.representativeByGroup[$0] }, Self.reaperDialogWid,
+                       "the app said this tab is active; the group still shows the other one")
+        XCTAssertEqual(s.mruFrontWid, Self.reaperDialogWid)
+    }
+
+    func testSemanticFocusCarriesAHeldGroupPastAnAmbiguousPhysicalJoin() {
+        let incomingWid: CGWindowID = 900
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "Tab A", order: 0),
+                       window(Self.reaperDialogWid, Self.reaperPid, "Tab B", order: 1),
+                       window(incomingWid, Self.reaperPid, "Tab C", order: 2)], frontmost: Self.reaperPid)
+        s.now = 100
+        s.windows[0].spaceIds = []
+        s.windows[0].lastLeftSpaceId = 4
+        s.held.insert(Self.reaperMainWid)
+        _ = s.formGroup([Self.reaperMainWid, Self.reaperDialogWid], representative: Self.reaperMainWid,
+                        reason: "test")
+        _ = WindowEventReducer.reduce(&s, .attentionCommitted(wid: incomingWid, observed: incomingWid, at: 100))
+        XCTAssertEqual(Set(s.groups.siblingWids(of: incomingWid) ?? []),
+                       Set([Self.reaperMainWid, Self.reaperDialogWid, incomingWid]))
+        XCTAssertFalse(s.groups.isTabbed(incomingWid))
+    }
+
+    func testSemanticFocusDoesNotCarryAHeldGroupFromAnotherSpace() {
+        let incomingWid: CGWindowID = 900
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "Tab A", order: 0),
+                       window(Self.reaperDialogWid, Self.reaperPid, "Tab B", order: 1),
+                       window(incomingWid, Self.reaperPid, "Tab C", order: 2)], frontmost: Self.reaperPid)
+        s.now = 100
+        s.windows[0].spaceIds = []
+        s.windows[0].lastLeftSpaceId = 99
+        s.held.insert(Self.reaperMainWid)
+        _ = s.formGroup([Self.reaperMainWid, Self.reaperDialogWid], representative: Self.reaperMainWid,
+                        reason: "test")
+        _ = WindowEventReducer.reduce(&s, .attentionCommitted(wid: incomingWid, observed: incomingWid, at: 100))
+        XCTAssertNil(s.groups.groupId(of: incomingWid))
+    }
+
+    func testUnrenderableNamedTabKeepsPresentableRepresentativeUntilSized() {
+        var incoming = window(Self.reaperDialogWid, Self.reaperPid, "Tab B", order: 1)
+        incoming.size = .zero
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "Tab A", order: 0), incoming],
+                      frontmost: Self.reaperPid)
+        s.now = 100
+        _ = s.formGroup([Self.reaperMainWid, Self.reaperDialogWid], representative: Self.reaperMainWid,
+                        reason: "test")
+        _ = WindowEventReducer.reduce(&s, .attentionCommitted(wid: Self.reaperMainWid,
+                                                              observed: Self.reaperDialogWid, at: 100))
+        let group = s.groups.groupId(of: Self.reaperDialogWid)
+        XCTAssertEqual(group.flatMap { s.groups.representativeByGroup[$0] }, Self.reaperMainWid)
+        XCTAssertEqual(s.mruFrontWid, Self.reaperDialogWid)
+    }
+
+    /// A window named outside any group is not a tab switch, and must not disturb membership.
+    func testNamingAWindowInNoGroupJustMovesTheOrder() {
+        var s = state([window(Self.reaperMainWid, Self.reaperPid, "REAPER", order: 1),
+                       window(Self.finderWid, Self.finderPid, "Finder", order: 0)],
+                      frontmost: Self.reaperPid)
+        s.now = 100
+        _ = WindowEventReducer.reduce(&s, .attentionCommitted(wid: Self.reaperMainWid,
+                                                              observed: Self.reaperMainWid, at: 100))
+        XCTAssertEqual(s.mruFrontWid, Self.reaperMainWid)
+        XCTAssertTrue(s.groups.membersByGroup.isEmpty)
+    }
+
+
+    // MARK: App Exposé — the re-show around a pick
+
+    /// A window of the front app the user had not opened in a long time — the one the reporter picked out of
+    /// App Exposé, and the one their MRU came back claiming was the most recent.
+    private static let reaperStaleWid: CGWindowID = 4601
+
+    /// The wids in the order the switcher would draw them.
+    private func mruWids(_ state: TrackedWindowState) -> [CGWindowID] {
+        state.windows.sorted { $0.lastFocusOrder < $1.lastFocusOrder }.compactMap { $0.wid }
+    }
+
+    /// **Picking a window in App Exposé moves that window, and nothing else.**
+    ///
+    /// App Exposé shows every window of the front app, and the pick puts them all back at once: a burst of
+    /// order-ins in the OS's layout order rather than the user's, with no order-out in front of them, either
+    /// side of the click that named the window they chose. Read as in-app raises, those order-ins walk the
+    /// app's OTHER windows to the top behind the pick, which is how a Chrome window untouched for hours came
+    /// back sitting at the front of the switcher.
+    ///
+    /// The #5936 mute could never have covered this: it was armed when Exposé OPENED and sized to be over
+    /// before a hand could reach the trackpad, while the pick comes seconds later. Nothing mutes anything
+    /// here — an 815 is not entitled to the order in the first place — and this pins the whole gesture rather
+    /// than that one rule.
+    ///
+    /// Another app's window sits BETWEEN the app's own windows in the order, because that is what makes the
+    /// damage visible: with them already adjacent, a burst that re-fronts all three changes nothing anybody
+    /// can see.
+    func testAnAppExposePickMovesOnlyThePickedWindow() {
         var s = state([
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 0),
-            window(Self.finderWid, Self.finderPid, "Liebesleid", order: 1),
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 2),
-            window(reaperThirdWid, Self.reaperPid, "Untitled", order: 3),
+            window(Self.reaperMainWid, Self.reaperPid, "where the user was", order: 0),
+            window(Self.finderWid, Self.finderPid, "Finder", order: 1),
+            window(Self.reaperDialogWid, Self.reaperPid, "another window of the app", order: 2),
+            window(Self.reaperStaleWid, Self.reaperPid, "not opened in a long time", order: 3),
         ], frontmost: Self.reaperPid)
-        _ = WindowEventReducer.reduce(&s, .systemReshow(now: 100, source: .missionControl))
-        for wid in [Self.reaperMainWid, Self.finderWid, Self.reaperDialogWid, reaperThirdWid] {
-            let effects = WindowEventReducer.reduce(&s,
-                .windowOrderedIn(wid: wid, now: 100.012, inSpaceTransition: false))
-            XCTAssertFalse(effects.contains(.applyFocus(wid)), "#\(wid) was re-fronted by Mission Control")
+        s.now = 100
+        let harness = TestReducerRunner(initial: s)
+        let reshow = { (wid: CGWindowID, now: TimeInterval) -> TestReducerRunner.Step in
+            .input(.windowOrderedIn(wid: wid, now: now, inSpaceTransition: false))
         }
-        XCTAssertEqual(order(s, Self.reaperMainWid), 0)
-        XCTAssertEqual(order(s, Self.finderWid), 1)
-        XCTAssertEqual(order(s, Self.reaperDialogWid), 2)
-        XCTAssertEqual(order(s, reaperThirdWid), 3)
+        // the OS starts putting the desktop back before the click has been decided
+        harness.run([reshow(Self.reaperDialogWid, 100.1), reshow(Self.reaperMainWid, 100.2)])
+        XCTAssertEqual(mruWids(harness.state),
+                       [Self.reaperMainWid, Self.finderWid, Self.reaperDialogWid, Self.reaperStaleWid],
+                       "the re-show burst moved the order on its own; an 815 says a window is on screen, "
+                       + "never that the user went to it")
+        // the click on the thumbnail, which is the one thing here that names a window
+        harness.run([.input(.attentionCommitted(wid: Self.reaperStaleWid, observed: Self.reaperStaleWid,
+                                                at: 100.3))])
+        // and the tail of the same burst, arriving after the pick
+        harness.run([reshow(Self.reaperStaleWid, 100.4), reshow(Self.reaperDialogWid, 100.5),
+                     .input(.windowFocused(wid: Self.reaperStaleWid, now: 100.5))])
+        XCTAssertEqual(mruWids(harness.state),
+                       [Self.reaperStaleWid, Self.reaperMainWid, Self.finderWid, Self.reaperDialogWid],
+                       "App Exposé's pick moved more than the window it picked: the windows the user never "
+                       + "chose came back at the front, ahead of the other app's window they had used since")
     }
 
-    /// The backstop, with NO signal armed at all: the same burst is recognised by its shape, because a raise
-    /// moves one window and a re-show moves all of them at once. The first member still bumps (nothing
-    /// separates it from a raise yet) and is harmless — it is the frontmost app's front window, already at
-    /// MRU 0. Members 2..N are the damage, and they are what this catches.
-    func testABurstIsCaughtByItsShapeWithNoSignalArmed() {
-        let reaperThirdWid: CGWindowID = 4601
-        var s = state([
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 0),
-            window(Self.finderWid, Self.finderPid, "Liebesleid", order: 1),
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 2),
-            window(reaperThirdWid, Self.reaperPid, "Untitled", order: 3),
-        ], frontmost: Self.reaperPid)
-        // the captured spacing: consecutive members ~0.12ms apart
-        for (i, wid) in [Self.reaperMainWid, Self.finderWid, Self.reaperDialogWid, reaperThirdWid].enumerated() {
-            _ = WindowEventReducer.reduce(&s,
-                .windowOrderedIn(wid: wid, now: 100 + Double(i) * 0.00012, inSpaceTransition: false))
-        }
-        XCTAssertEqual(order(s, Self.reaperMainWid), 0, "the burst's first member held the front it already had")
-        XCTAssertEqual(order(s, Self.finderWid), 1)
-        XCTAssertEqual(order(s, Self.reaperDialogWid), 2, "a burst member walked to the front")
-        XCTAssertEqual(order(s, reaperThirdWid), 3, "a burst member walked to the front")
-    }
-
-    /// The counterfactual that keeps Cmd+` working: an order-in ARRIVING ALONE is still the in-app raise it
-    /// has always been. 200ms is under the fastest human action in any capture (219ms, #5785).
-    func testALoneOrderInStillBumps() {
-        var s = state([
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 0),
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 1),
-        ], frontmost: Self.reaperPid)
-        _ = WindowEventReducer.reduce(&s,
-            .windowOrderedIn(wid: Self.reaperDialogWid, now: 100, inSpaceTransition: false))
-        let effects = WindowEventReducer.reduce(&s,
-            .windowOrderedIn(wid: Self.reaperMainWid, now: 100.2, inSpaceTransition: false))
-        XCTAssertTrue(effects.contains(.applyFocus(Self.reaperMainWid)))
-        XCTAssertEqual(order(s, Self.reaperMainWid), 0)
-    }
-
-    /// The SAME window ordered in twice in an instant is not a burst, it is one window reported twice — the
-    /// shape every genuine focus has (its 808 and its 815 land in the same millisecond).
-    func testTheSameWindowTwiceIsNotABurst() {
-        var s = state([
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 0),
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 1),
-        ], frontmost: Self.reaperPid)
-        _ = WindowEventReducer.reduce(&s,
-            .windowOrderedIn(wid: Self.reaperMainWid, now: 100, inSpaceTransition: false))
-        let effects = WindowEventReducer.reduce(&s,
-            .windowOrderedIn(wid: Self.reaperMainWid, now: 100.001, inSpaceTransition: false))
-        XCTAssertTrue(effects.contains(.applyFocus(Self.reaperMainWid)))
-        XCTAssertEqual(order(s, Self.reaperMainWid), 0)
-    }
-
-    /// An UNTRACKED wid in the burst still counts as evidence: a re-show sweeps up every window on screen,
-    /// including ones we have not discovered yet, and a record with holes cannot recognise a burst. Here the
-    /// untracked wid separates two tracked ones, so without it the second would read as arriving alone.
-    func testAnUntrackedWidCountsAsBurstEvidence() {
-        let untrackedWid: CGWindowID = 9999
-        var s = state([
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 0),
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 1),
-        ], frontmost: Self.reaperPid)
-        _ = WindowEventReducer.reduce(&s, .windowOrderedIn(wid: untrackedWid, now: 100, inSpaceTransition: false))
-        let effects = WindowEventReducer.reduce(&s,
-            .windowOrderedIn(wid: Self.reaperDialogWid, now: 100.001, inSpaceTransition: false))
-        XCTAssertFalse(effects.contains(.applyFocus(Self.reaperDialogWid)))
-        XCTAssertEqual(order(s, Self.reaperDialogWid), 1)
-    }
-
-    /// Each mute is sized for its own trigger, and this is what that buys: dismiss Mission Control, cycle
-    /// windows a beat later, and the raise still moves the MRU. Under one mute sized for the wake burst's
-    /// 2.03s lag, a Cmd+` a second after a gesture that finishes in 100ms was swallowed.
-    func testAnInAppRaiseASecondAfterMissionControlStillBumps() {
-        var s = state([
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 0),
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 1),
-        ], frontmost: Self.reaperPid)
-        _ = WindowEventReducer.reduce(&s, .systemReshow(now: 100, source: .missionControl))
-        let effects = WindowEventReducer.reduce(&s,
-            .windowOrderedIn(wid: Self.reaperMainWid, now: 101, inSpaceTransition: false))
-        XCTAssertTrue(effects.contains(.applyFocus(Self.reaperMainWid)))
-        XCTAssertEqual(order(s, Self.reaperMainWid), 0)
-    }
-
-    /// ...and the wake mute really does stay open that long, because its own burst arrives at 2.03s. The two
-    /// together are the whole point of sizing per source rather than taking the slowest for everyone.
-    func testTheWakeMuteStillCoversItsOwnLateBurst() {
-        var s = state([
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 0),
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 1),
-        ], frontmost: Self.reaperPid)
-        _ = WindowEventReducer.reduce(&s, .systemReshow(now: 100, source: .wake))
-        let effects = WindowEventReducer.reduce(&s,
-            .windowOrderedIn(wid: Self.reaperMainWid, now: 102.03, inSpaceTransition: false))
-        XCTAssertFalse(effects.contains(.applyFocus(Self.reaperMainWid)))
-        XCTAssertEqual(order(s, Self.reaperMainWid), 1)
-    }
-
-    /// The mute is time-bounded, because the signal it stands in front of is real: an order-in of the active
-    /// app's window IS the native Cmd+` raise, which emits nothing else. Past the window it bumps as before.
-    func testAnInAppRaiseStillBumpsOnceTheMuteExpired() {
-        var s = state([
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 0),
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 1),
-        ], frontmost: Self.reaperPid)
-        _ = WindowEventReducer.reduce(&s, .systemReshow(now: 100, source: .wake))
-        let effects = WindowEventReducer.reduce(&s,
-            .windowOrderedIn(wid: Self.reaperMainWid, now: 103.5, inSpaceTransition: false))
-        XCTAssertTrue(effects.contains(.applyFocus(Self.reaperMainWid)))
-        XCTAssertEqual(order(s, Self.reaperMainWid), 0)
-    }
-
-    /// Only the order-in path is muted. An 808 is the OS STATING a focus rather than us inferring one from a
-    /// raise, the wake burst contains none, and swallowing one would lose the first window the user picks.
-    func testAFocusEventDuringTheMuteStillBumps() {
-        var s = state([
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 0),
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 1),
-        ], frontmost: Self.reaperPid)
-        _ = WindowEventReducer.reduce(&s, .systemReshow(now: 100, source: .wake))
-        let effects = WindowEventReducer.reduce(&s,
-            .windowFocused(wid: Self.reaperMainWid, now: 102.03))
-        XCTAssertTrue(effects.contains(.applyFocus(Self.reaperMainWid)))
-        XCTAssertEqual(order(s, Self.reaperMainWid), 0)
-    }
-
-    /// An un-minimize is spared the mute: a wake leaves minimized windows minimized, so a window our model
-    /// watched leave that state was restored by the user. It matters because a Dock restore inside the
-    /// already-frontmost app emits ONLY this order-in — nothing behind it would correct a swallowed bump.
-    func testRestoringAMinimizedWindowDuringTheMuteStillBumps() {
-        var s = state([
-            window(Self.reaperDialogWid, Self.reaperPid, "Insert Multiple Media Items", order: 0),
-            window(Self.reaperMainWid, Self.reaperPid, "Country Dance - REAPER v7.78", order: 1,
-                isMinimized: true),
-        ], frontmost: Self.reaperPid)
-        _ = WindowEventReducer.reduce(&s, .systemReshow(now: 100, source: .wake))
-        let effects = WindowEventReducer.reduce(&s,
-            .windowOrderedIn(wid: Self.reaperMainWid, now: 102.03, inSpaceTransition: false))
-        XCTAssertTrue(effects.contains(.applyFocus(Self.reaperMainWid)))
-        XCTAssertEqual(order(s, Self.reaperMainWid), 0)
-        XCTAssertEqual(s.window(Self.reaperMainWid)?.isMinimized, false)
-    }
 }

@@ -37,6 +37,7 @@ class TilesPanel: NSPanel {
     }
 
     func updateContents(_ preservedScrollOrigin: CGPoint?) {
+        MainThreadStall.step()
         caTransaction {
             TilesView.updateItemsAndLayout(preservedScrollOrigin)
             guard SwitcherSession.isActive else { return }
@@ -71,6 +72,7 @@ class TilesPanel: NSPanel {
     }
 
     override func orderOut(_ sender: Any?) {
+        MainThreadStall.step()
         TilesView.clearNeedsLayout()
         if Preferences.fadeOutAnimation {
             NSAnimationContext.runAnimationGroup(
@@ -78,13 +80,17 @@ class TilesPanel: NSPanel {
                 completionHandler: { super.orderOut(sender) }
             )
         } else {
-            // orderOut requires WindowServer. Let's hide before calling it, in case it lags
+            // Not a hedge against a slow `orderOut`: both land in the same CoreAnimation transaction, which
+            // only commits when this runloop turn ends, so nothing here reaches the screen any earlier.
+            // It leaves the panel at alpha 0 for the NEXT summon, which is what lets
+            // `showUiOrCycleSelection` mask a cross-shortcut rebuild and `show()` reveal it atomically.
             alphaValue = 0
             super.orderOut(sender)
         }
     }
 
     func show() {
+        MainThreadStall.step()
         updateAppearance()
         // The panel may have been hidden (alpha=0) by `App.showUiOrCycleSelection` on a
         // cross-shortcut summon to mask the rebuild. Reveal it atomically now that contents
@@ -172,6 +178,8 @@ extension TilesPanel: NSWindowDelegate {
         // -render and let the reconcile's re-layout race the first frame.)
         let refreshObserver = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, 0) { observer, _ in
             if let observer { CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes) }
+            // The show is its own reason to re-read the world, and it does not wait out any quiet period:
+            // a correction that lands after the user has already chosen is worth nothing.
             Applications.manuallyRefreshAllWindows()
         }
         CFRunLoopAddObserver(CFRunLoopGetMain(), refreshObserver, .commonModes)

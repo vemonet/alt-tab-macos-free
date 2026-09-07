@@ -228,9 +228,9 @@
 "Show details (for support)" = "詳細を表示(サポート用)";
 "Show fullscreen windows" = "フルスクリーンのウインドウを表示";
 "Show hidden windows" = "非表示のウインドウを表示";
-"Show main window" = "メインウインドウを表示";
 "Show minimized windows" = "最小化されたウインドウを表示";
 "Show on" = "表示する画面";
+"Show one window per app" = "App ごとに 1 つのウインドウを表示";
 "Show separate window for each tab" = "タブごとに別のウインドウを表示";
 "Show single window for all tabs" = "すべてのタブを 1 つのウインドウで表示";
 "Show titles" = "タイトルを表示";

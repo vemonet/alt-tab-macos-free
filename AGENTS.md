@@ -7,6 +7,14 @@
 - When possible, follow the triad pattern: specs in *Specs.md, unit-tests in *Tests.swift, and *swift for the implementation. Document features and their edge-cases this way
 - Favor low latency and responsiveness. Reuse objects, avoid wasting memory or I/O. Use observer APIs; don't poll.
 
+# Main-thread IPC
+Ordinary AppKit calls can be a synchronous XPC round trip, so they can hang for as long as the other process takes. `searchField.stringValue = ""` froze a user's main thread for 3.0s (#5981): it resigned first responder, which deactivates the system text-input context, which timed out. Assume any AppKit call that changes first responder, orders a window, or resizes one talks to another process.
+- Everything under `NSResponder` and `NSCell` (so `NSWindow`, `NSView`, `NSControl`, `NSTextField`, `NSApplication`) plus `NSTextInputContext` is main-thread-only, and AppKit asserts on it at runtime. For those the levers are ordering and deferral, not dispatch: the three off-main schedulers (`AXCallScheduler`, `CGSCallScheduler`, `ProcessCallScheduler`) can't take them.
+- `NSWorkspace` and `NSRunningApplication` are the documented exception: their headers state they are thread safe, so LaunchServices reads (`runningApplications`, `frontmostApplication`, `bundleURL`, `icon`, `activate`) may run off-main, and `Application.fetchAppIcon` already relies on that. Don't "fix" them back onto main. `src/main-thread-ipc.md` has the audited call sites and the evidence for both halves of this.
+- On the latency-critical paths (summoning, a keystroke while cycling or searching, dismissal with focus), nothing that can stall may run before the work the user is waiting for. Put the visible work first; put the bookkeeping after it.
+- A CoreAnimation transaction commits when the runloop turn ENDS. Setting `alphaValue` or calling `orderOut` does not reach the screen before that, so blocking later in the same turn keeps the old frame up. Defer with `DispatchQueue.main.async` and re-check the state in the block.
+- `MainThreadStall.step()` at the top of a main-thread function names it in the log when it runs long. Use it to measure rather than guessing; temporarily lower `thresholdInMs` and add marks around single statements to attribute a cost.
+
 # Comments
 A wrong comment costs several times more than a missing one, for humans and agents alike. So write for low drift, not for low line count. A correct, non-obvious comment can be as long as it needs to be.
 - Comment what the code cannot show: OS/API behaviour (macOS, CGS, SkyLight, AppKit), measured timings, private-API notes, invariants, and why a guard that looks removable isn't. Prefer measured evidence over recollection.

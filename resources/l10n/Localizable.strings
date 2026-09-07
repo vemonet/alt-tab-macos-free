@@ -689,13 +689,13 @@
 "Show hidden windows" = "Show hidden windows";
 
 /* No comment provided by engineer. */
-"Show main window" = "Show main window";
-
-/* No comment provided by engineer. */
 "Show minimized windows" = "Show minimized windows";
 
 /* No comment provided by engineer. */
 "Show on" = "Show on";
+
+/* No comment provided by engineer. */
+"Show one window per app" = "Show one window per app";
 
 /* No comment provided by engineer. */
 "Show separate window for each tab" = "Show separate window for each tab";

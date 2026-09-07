@@ -25,7 +25,7 @@ enum WsEventRouting {
         case acquireAndDiscriminate  // possibly-untracked wid → get its AX element + decide if it's a real window
         case remove                  // window gone
         case updateGeometry          // moved/resized → refresh bounds
-        case bumpFocusOrder          // became frontmost → MRU
+        case noteFocusEvent          // the WindowServer says this window came forward (808)
         case refreshVisibility       // ordered in/out → re-read minimized/visible (minimize isn't its own event)
         case updateSpaceMembership   // payload carries (spaceId, wid)
         case spaceTransition         // current/active Space changed
@@ -40,7 +40,7 @@ enum WsEventRouting {
             case .windowCreated: return .acquireAndDiscriminate
             case .windowDestroyed: return .remove
             case .windowMoved, .windowResized: return .updateGeometry
-            case .windowFocused: return .bumpFocusOrder
+            case .windowFocused: return .noteFocusEvent
             case .windowOrderedIn, .windowOrderedOut: return .refreshVisibility
             case .windowAddedToSpace, .windowRemovedFromSpace: return .updateSpaceMembership
             case .spaceCurrentChanged, .activeSpaceChanged: return .spaceTransition

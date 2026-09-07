@@ -150,3 +150,47 @@ final class WindowOrderResolverTests: XCTestCase {
         XCTAssertFalse(WindowOrderResolver.isOrderedBefore(a, a, sortType: .recentlyFocused))
     }
 }
+
+final class ApplicationRepresentativeResolverTests: XCTestCase {
+    private func c(_ id: String, current: Bool = false, attended: Bool = false,
+                   main: Bool = false, focus: Int = 0, creation: Int = 0)
+        -> ApplicationRepresentativeCandidate {
+        ApplicationRepresentativeCandidate(id: id, isCurrentAttention: current,
+            isLastAttention: attended, isMainWindow: main, lastFocusOrder: focus,
+            creationOrder: creation)
+    }
+
+    func testCurrentAttentionWinsEveryFallback() {
+        let candidates = [c("main", main: true, focus: 0), c("current", current: true, focus: 9)]
+        XCTAssertEqual(ApplicationRepresentativeResolver.pick(candidates, stableId: "main"), "current")
+    }
+
+    func testStableRepresentativeWinsWhileStillEligible() {
+        let candidates = [c("stable", focus: 8), c("attended", attended: true, focus: 0)]
+        XCTAssertEqual(ApplicationRepresentativeResolver.pick(candidates, stableId: "stable"), "stable")
+    }
+
+    func testLastConfirmedAttentionWinsBeforeAxMain() {
+        let candidates = [c("main", main: true, focus: 0), c("attended", attended: true, focus: 7)]
+        XCTAssertEqual(ApplicationRepresentativeResolver.pick(candidates, stableId: nil), "attended")
+    }
+
+    func testAxMainIsColdStartFallback() {
+        let candidates = [c("mru", focus: 0), c("main", main: true, focus: 5)]
+        XCTAssertEqual(ApplicationRepresentativeResolver.pick(candidates, stableId: nil), "main")
+    }
+
+    func testMruAndCreationBreakFallbackTiesDeterministically() {
+        XCTAssertEqual(ApplicationRepresentativeResolver.pick([
+            c("old", focus: 2, creation: 1), c("new", focus: 1, creation: 1),
+        ], stableId: nil), "new")
+        XCTAssertEqual(ApplicationRepresentativeResolver.pick([
+            c("old", focus: 1, creation: 1), c("new", focus: 1, creation: 2),
+        ], stableId: nil), "new")
+    }
+
+    func testIneligibleStableRepresentativeDoesNotBlockReplacement() {
+        XCTAssertEqual(ApplicationRepresentativeResolver.pick([c("available")], stableId: "filtered"),
+            "available")
+    }
+}

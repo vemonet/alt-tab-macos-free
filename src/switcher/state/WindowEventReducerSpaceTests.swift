@@ -38,8 +38,8 @@ final class WindowEventReducerSpaceTests: XCTestCase {
 
     /// The leading edge exists to make ONE cheap fact current before the summon that follows it. A repaint
     /// here is the trap: `refreshOpenUiAfterExternalEvent` is throttled at 200ms leading-edge, so repainting
-    /// the instant the Space flips spends that edge and the arriving Space's focus 808 — 14-67ms later,
-    /// measured — then waits out the tail (live: 19ms became 220ms). Exact equality, so re-adding any of it
+    /// the instant the Space flips spends that edge and the semantic focus answer that follows then waits
+    /// out the tail (live: 19ms became 220ms). Exact equality, so re-adding any of it
     /// fails here rather than in a QA run weeks later.
     func testSpaceTransitionStartedEmitsTheTopologyReadAlone() {
         var s = state()
@@ -84,7 +84,7 @@ final class WindowEventReducerSpaceTests: XCTestCase {
     func testAnAnswerDoesNotWipeAWindowItNeverAskedAbout() {
         var s = state()
         _ = WindowEventReducer.reduce(&s, .spacesSynced(windowToSpaces: [Self.widA: [1]],
-            queried: [Self.widA], placedByWindowServer: [], topologyChanged: false))
+            queried: [Self.widA], answered: [Self.widA], placedByWindowServer: [], topologyChanged: false))
         XCTAssertEqual(s.window(Self.widB)?.spaceIds, [2], "widB was never queried, so nothing was learnt")
         XCTAssertFalse(s.isPhantom(s.windows[1]))
     }
@@ -96,17 +96,28 @@ final class WindowEventReducerSpaceTests: XCTestCase {
     func testAnAnswerIsAppliedEvenToAWindowItNeverAskedAbout() {
         var s = state()
         _ = WindowEventReducer.reduce(&s, .spacesSynced(windowToSpaces: [Self.widB: [1]],
-            queried: [Self.widA], placedByWindowServer: [], topologyChanged: false))
+            queried: [Self.widA], answered: [Self.widA, Self.widB],
+            placedByWindowServer: [], topologyChanged: false))
         XCTAssertEqual(s.window(Self.widB)?.spaceIds, [1])
     }
 
     /// The other half, which must keep working: a wid the pass DID ask about, the map does not place, and the
     /// WindowServer does not place either. THAT is CGS answering "no Space", and it is what retires a group's
     /// dead members and hands a closed window to the sweep, so neither skip above may swallow it.
-    func testAQueriedWindowWithNoAnswerIsStillWiped() {
+    func testAQueriedWindowWhoseDirectQueryFailedKeepsItsLastMembership() {
         var s = state()
         _ = WindowEventReducer.reduce(&s, .spacesSynced(windowToSpaces: [Self.widA: [1]],
-            queried: [Self.widA, Self.widB], placedByWindowServer: [], topologyChanged: false))
+            queried: [Self.widA, Self.widB], answered: [Self.widA],
+            placedByWindowServer: [], topologyChanged: false))
+        XCTAssertEqual(s.window(Self.widB)?.spaceIds, [2])
+        XCTAssertFalse(s.isPhantom(s.windows[1]))
+    }
+
+    func testAnExplicitEmptyAnswerWipesAQueriedWindow() {
+        var s = state()
+        _ = WindowEventReducer.reduce(&s, .spacesSynced(
+            windowToSpaces: [Self.widA: [1], Self.widB: []], queried: [Self.widA, Self.widB],
+            answered: [Self.widA, Self.widB], placedByWindowServer: [], topologyChanged: false))
         XCTAssertEqual(s.window(Self.widB)?.spaceIds, [])
         XCTAssertTrue(s.isPhantom(s.windows[1]))
     }
@@ -120,8 +131,9 @@ final class WindowEventReducerSpaceTests: XCTestCase {
     /// the last membership CGS itself reported instead of being wiped and hidden with no way back.
     func testAContradictedEmptyKeepsTheLastKnownMembership() {
         var s = state()
-        _ = WindowEventReducer.reduce(&s, .spacesSynced(windowToSpaces: [Self.widA: [1]],
-            queried: [Self.widA, Self.widB], placedByWindowServer: [Self.widB], topologyChanged: false))
+        _ = WindowEventReducer.reduce(&s, .spacesSynced(
+            windowToSpaces: [Self.widA: [1], Self.widB: []], queried: [Self.widA, Self.widB],
+            answered: [Self.widA, Self.widB], placedByWindowServer: [Self.widB], topologyChanged: false))
         XCTAssertEqual(s.window(Self.widB)?.spaceIds, [2], "the last CGS-reported membership, not a guess")
         XCTAssertFalse(s.isPhantom(s.windows[1]))
     }
@@ -131,7 +143,53 @@ final class WindowEventReducerSpaceTests: XCTestCase {
     func testAPlacedWindowStillTakesItsNewSpace() {
         var s = state()
         _ = WindowEventReducer.reduce(&s, .spacesSynced(windowToSpaces: [Self.widA: [1], Self.widB: [1]],
-            queried: [Self.widA, Self.widB], placedByWindowServer: [Self.widB], topologyChanged: false))
+            queried: [Self.widA, Self.widB], answered: [Self.widA, Self.widB],
+            placedByWindowServer: [Self.widB], topologyChanged: false))
         XCTAssertEqual(s.window(Self.widB)?.spaceIds, [1])
+    }
+
+    // MARK: - E. A transition that never commits, and transitions that overlap
+
+    /// **A swipe the user abandons.** Three fingers travel a little and lift below the Dock's commit
+    /// threshold: the WindowServer really does begin moving windows, so the transition's leading edge fires,
+    /// and then the Space it settles on is the one it started on. Nothing changed, and the reducer must
+    /// agree that nothing changed — a model that took the START of a transition as its answer would be left
+    /// filtering and sorting for a Space the user never reached, with no second event coming to correct it.
+    ///
+    /// Only reachable live since the QA harness learned to synthesize a dock swipe; a
+    /// commanded `SLSManagedDisplaySetCurrentSpace` always commits, so this shape could not be produced.
+    func testATransitionThatNeverCommitsLeavesTheModelWhereItWas() {
+        var s = state()
+        let before = s.windows
+        _ = WindowEventReducer.reduce(&s, .spaceTransitionStarted)
+        _ = WindowEventReducer.reduce(&s, .spaceChangeSettled)
+        XCTAssertEqual(s.currentSpaceId, 1)
+        XCTAssertEqual(s.visibleSpaces, [1])
+        XCTAssertEqual(s.windows, before, "an abandoned transition is not evidence about any window")
+    }
+
+    /// The settled pass still asks, even when nothing moved. The reducer cannot know the swipe was abandoned
+    /// — only the answer can say so — so the requery is what makes the two cases converge rather than the
+    /// reducer guessing between them.
+    func testAnAbandonedTransitionStillRequeries() {
+        var s = state()
+        _ = WindowEventReducer.reduce(&s, .spaceTransitionStarted)
+        let effects = WindowEventReducer.reduce(&s, .spaceChangeSettled)
+        XCTAssertTrue(effects.contains(.refreshSpacesTopologyAndSync))
+        XCTAssertTrue(effects.contains(.queryWindowServerState(wids: [Self.widA, Self.widB], throttled: false)))
+    }
+
+    /// **Swipes faster than the animation.** Each one starts a transition while the last is still running, so
+    /// the leading edges arrive back to back with no settle between them. The edge carries no per-transition
+    /// state, so a second one must be exactly the first — anything accumulated here would be a leak that
+    /// grows with how fast the user swipes.
+    func testOverlappingTransitionsAreIdempotent() {
+        var s = state()
+        let first = WindowEventReducer.reduce(&s, .spaceTransitionStarted)
+        let snapshot = s.windows
+        let second = WindowEventReducer.reduce(&s, .spaceTransitionStarted)
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(s.windows, snapshot)
+        XCTAssertEqual(s.currentSpaceId, 1)
     }
 }

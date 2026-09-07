@@ -118,7 +118,11 @@ class AccessibilityPermission {
 
     @discardableResult
     static func update() -> PermissionStatus {
+        let previous = status
         status = detect()
+        if previous == .notGranted, status == .granted, SystemPermissions.preStartupPermissionsPassed {
+            AxObserverRegistry.shared.accessibilityPermissionRestored()
+        }
         return status
     }
 

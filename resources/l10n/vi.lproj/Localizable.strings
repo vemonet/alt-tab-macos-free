@@ -228,9 +228,9 @@
 "Show details (for support)" = "Hiển thị chi tiết (để hỗ trợ)";
 "Show fullscreen windows" = "Hiển thị cửa sổ toàn màn hình";
 "Show hidden windows" = "Hiển thị cửa sổ đã ẩn";
-"Show main window" = "Hiển thị cửa sổ chính";
 "Show minimized windows" = "Hiển thị cửa sổ đã thu nhỏ";
 "Show on" = "Hiển thị trên";
+"Show one window per app" = "Hiển thị một cửa sổ cho mỗi ứng dụng";
 "Show separate window for each tab" = "Hiển thị cửa sổ riêng cho mỗi tab";
 "Show single window for all tabs" = "Hiển thị một cửa sổ cho tất cả tab";
 "Show titles" = "Hiển thị tiêu đề";

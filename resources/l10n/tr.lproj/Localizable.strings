@@ -228,9 +228,9 @@
 "Show details (for support)" = "Ayrıntıları göster (destek için)";
 "Show fullscreen windows" = "Tam ekran pencereleri göster";
 "Show hidden windows" = "Gizli pencereleri göster";
-"Show main window" = "Ana pencereyi göster";
 "Show minimized windows" = "Küçültülmüş pencereleri göster";
 "Show on" = "Şurada göster";
+"Show one window per app" = "Uygulama başına tek pencere göster";
 "Show separate window for each tab" = "Her sekme için ayrı pencere göster";
 "Show single window for all tabs" = "Tüm sekmeler için tek pencere göster";
 "Show titles" = "Başlıkları göster";

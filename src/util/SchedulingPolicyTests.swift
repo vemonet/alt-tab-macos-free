@@ -124,4 +124,74 @@ final class SchedulingPolicyTests: XCTestCase {
         // a fresh situation restarts the budget rather than inheriting the previous one's
         XCTAssertEqual(InactiveTabScanPolicy.attemptsAfterScan(previousAttempts: 2, sameSituation: false, adopted: 0), 1)
     }
+
+    /// A candidate the sweep found and the caller handed back — because it is parked on ANOTHER window of the
+    /// same app, so it is that window's tab — rewinds the cursor onto itself instead of being stepped over.
+    /// Two tab groups of one app used to be permanently uncrossable this way: each requester's sweep stopped
+    /// on the other group's tabs, dropped them, and moved the shared cursor past them, so the requester that
+    /// owned them started above them next time (QA C-05, six tabs collapsing to two).
+    func testACandidateLeftForAnotherWindowIsNotSteppedOver() {
+        XCTAssertEqual(InactiveTabScanPolicy.nextCursor(adopted: 0, deferredId: 21446, sweptTo: 21267), 21267)
+        XCTAssertEqual(InactiveTabScanPolicy.nextCursor(adopted: 0, deferredId: 21200, sweptTo: 21267), 21200)
+        // nothing deferred ⇒ resume where the sweep stopped, as before
+        XCTAssertEqual(InactiveTabScanPolicy.nextCursor(adopted: 0, deferredId: nil, sweptTo: 21267), 21267)
+        // an adoption restarts from the anchor: the window set moved, so the band to sweep did too
+        XCTAssertEqual(InactiveTabScanPolicy.nextCursor(adopted: 2, deferredId: 21200, sweptTo: 21267), 0)
+    }
+
+    // MARK: - D. SurfaceAcquisitionPolicy
+
+    /// a surface with no failure on record is swept, as before
+    func testAFreshSurfaceIsAlwaysAttempted() {
+        XCTAssertTrue(SurfaceAcquisitionPolicy.shouldAttempt(recordedSituation: nil, attempts: 0, situation: 7))
+    }
+
+    /// a failure is not a verdict: the situation keeps its attempts, because an app still building its
+    /// accessibility tree at launch fails transiently
+    func testAFailedSurfaceIsRetriedWithinTheBudget() {
+        for spent in 0..<SurfaceAcquisitionPolicy.maxAttemptsPerSituation {
+            XCTAssertTrue(SurfaceAcquisitionPolicy.shouldAttempt(recordedSituation: 7, attempts: spent, situation: 7))
+        }
+    }
+
+    /// past the cap the sweep leaves it out of subsequent process batches
+    func testAFailedSurfaceStopsAtTheCap() {
+        XCTAssertFalse(SurfaceAcquisitionPolicy.shouldAttempt(recordedSituation: 7,
+            attempts: SurfaceAcquisitionPolicy.maxAttemptsPerSituation, situation: 7))
+    }
+
+    /// the app gaining or losing a window is what plausibly makes a previously-unreachable element
+    /// reachable, so it restarts the budget however exhausted the last situation was
+    func testANewWindowSetMakesTheSurfaceEligibleAgain() {
+        XCTAssertTrue(SurfaceAcquisitionPolicy.shouldAttempt(recordedSituation: 7, attempts: 99, situation: 8))
+    }
+
+    /// the counter is per situation, not cumulative, so a long-lived app that churns windows never
+    /// accumulates its way into a permanent refusal
+    func testAttemptsResetOnANewSituation() {
+        XCTAssertEqual(SurfaceAcquisitionPolicy.attemptsAfterFailure(previousAttempts: 2, sameSituation: true), 3)
+        XCTAssertEqual(SurfaceAcquisitionPolicy.attemptsAfterFailure(previousAttempts: 2, sameSituation: false), 1)
+    }
+
+    /// a busy app is still inside its budget, so nothing that waits on the give-up verdict may act yet
+    func testGivingUpDoesNotHappenWhileTriesRemain() {
+        for spent in 0..<SurfaceAcquisitionPolicy.maxAttemptsPerSituation {
+            XCTAssertFalse(SurfaceAcquisitionPolicy.hasGivenUp(attempts: spent))
+        }
+    }
+
+    /// giving up is the same moment the sweep stops paying, never a later one: a caller must not act on a
+    /// verdict the sweep has not reached
+    func testGivingUpIsExactlyWhereTheSweepStops() {
+        XCTAssertTrue(SurfaceAcquisitionPolicy.hasGivenUp(attempts: SurfaceAcquisitionPolicy.maxAttemptsPerSituation))
+        XCTAssertFalse(SurfaceAcquisitionPolicy.shouldAttempt(recordedSituation: 7,
+            attempts: SurfaceAcquisitionPolicy.maxAttemptsPerSituation, situation: 7))
+    }
+
+    /// a new window set restarts the budget, so the app is not permanently condemned by one bad arrangement:
+    /// `hasGivenUp` reads the count the caller just stored, and that count resets with the situation
+    func testGivingUpIsUndoneByANewSituation() {
+        let afterReset = SurfaceAcquisitionPolicy.attemptsAfterFailure(previousAttempts: 99, sameSituation: false)
+        XCTAssertFalse(SurfaceAcquisitionPolicy.hasGivenUp(attempts: afterReset))
+    }
 }

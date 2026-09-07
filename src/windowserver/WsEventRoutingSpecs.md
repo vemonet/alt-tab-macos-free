@@ -19,7 +19,7 @@ focused/front window changed (confirmed cross-app and intra-app)**, 1325/1326 ad
   `refreshVisibility`, after which `WsWindowState` reads the minimized bit.
 - **Space notifications (1325/1326) carry `(spaceId, wid)` in the payload** — membership is free, no query.
 - **Created (811) ⇒ `acquireAndDiscriminate`** — the wid may be untracked; we must obtain its AX element
-  and run `WindowDiscriminator` before showing it.
+  and run `WindowAdmissionResolver` before showing it.
 
 ## Test scenarios
 
@@ -30,7 +30,7 @@ Mirrors `WsEventRoutingTests.swift` 1:1.
 - **testUnknownIdsAreNil** — heartbeat/other ids (1502, 1503, 1322, 0, 999) decode to nil.
 
 ### B. Action mapping
-- **testActionForEachNotification** — created→acquireAndDiscriminate, destroyed→remove, moved/resized→updateGeometry, focused→bumpFocusOrder, orderedIn/orderedOut→refreshVisibility, added/removed-Space→updateSpaceMembership, current/active-Space→spaceTransition.
+- **testActionForEachNotification** — created→acquireAndDiscriminate, destroyed→remove, moved/resized→updateGeometry, focused→noteFocusEvent, orderedIn/orderedOut→refreshVisibility, added/removed-Space→updateSpaceMembership, current/active-Space→spaceTransition.
 
 ### C. Payload
 - **testOnlySpaceMembershipNotificationsCarrySpaceId** — added/removed-from-Space carry a Space id; all others do not.

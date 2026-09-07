@@ -220,7 +220,7 @@ final class TestScenarioSimulator {
             if shown.isEmpty && !everShown.contains(w.identity) { continue }
             vanishFailures.append("window #\(w.identity) (\(w.tabs.count) tab(s), fullscreen=\(w.isFullscreen)) "
                 + "showed \(shown.count) tiles \(shown) (tracked wids \(known)) — a tile must never vanish or "
-                + "double, even for a beat — right after: \(lastUnit.prefix(150))")
+                + "double, even for a beat — right after: \(lastUnit.prefix(150))\n" + debugState())
             return   // first vanish only: everything after it is downstream noise
         }
     }

@@ -1,6 +1,8 @@
 import XCTest
 
-/// The guard on the one bug class the replay harness is structurally blind to.
+/// The guard on the one bug class the replay harness is structurally blind to, for the fields the bridge
+/// still copies by hand. The PER-WINDOW fields are not among them: a live `Window` stores its
+/// `TrackedWindow` (`Window.tracked`), so the bridge hands the whole record over and back.
 ///
 /// `TrackedWindowStateBridge.snapshot()` builds a FRESH `TrackedWindowState()` for every dispatch, so a field
 /// it does not repopulate is empty at the start of every input — anything written by one event and read by

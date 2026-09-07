@@ -228,9 +228,9 @@
 "Show details (for support)" = "显示详细信息（供支持使用）";
 "Show fullscreen windows" = "显示全屏窗口";
 "Show hidden windows" = "显示隐藏窗口";
-"Show main window" = "显示主窗口";
 "Show minimized windows" = "显示最小化窗口";
 "Show on" = "显示于";
+"Show one window per app" = "每个应用显示一个窗口";
 "Show separate window for each tab" = "每个标签显示单独的窗口";
 "Show single window for all tabs" = "所有标签显示单个窗口";
 "Show titles" = "显示标题";

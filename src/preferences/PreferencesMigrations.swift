@@ -304,7 +304,7 @@ class PreferencesMigrations {
                     }
                 }
             }
-            throw AxError.runtimeError // remove compiler warning
+            throw MigrationControlFlow.done // remove compiler warning
         } catch {
             // the LSSharedFile API is deprecated, and has a runtime crash on M1 Monterey
             // we catch any exception to void the app crashing
@@ -426,3 +426,10 @@ private protocol AvoidDeprecationWarnings {
 }
 
 extension PreferencesMigrations: AvoidDeprecationWarnings {}
+
+/// Not a failure: the login-item cleanup above ends with a throw purely to satisfy the compiler, and the
+/// surrounding `catch` exists to swallow the deprecated LSSharedFile API's M1 Monterey crash. Its own type,
+/// so it cannot be mistaken for an Accessibility error (it used to borrow `AxError`).
+enum MigrationControlFlow: Error {
+    case done
+}

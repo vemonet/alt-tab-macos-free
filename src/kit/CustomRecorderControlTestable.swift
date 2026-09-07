@@ -27,7 +27,7 @@ class CustomRecorderControlTestable {
         let oldCombos = oldCombinationsExcludingTargetOfCandidate(candidateId)
         // TODO: a user can assign a shortcut that's both .conflictWithExistingShortcut and .reservedByMacos
         // It's a mess to deal with. Current implem may let them bypass isReservedByMacos. Would be nice to think about what UX to do here
-        if let alreadyAssigned = isAlreadyUsedByAnotherShortcut(newCombos, oldCombos) {
+        if let alreadyAssigned = isAlreadyUsedByAnotherShortcut(newCombos, oldCombos, currentCombinations()) {
             return .conflictWithExistingShortcut(shortcutAlreadyAssigned: alreadyAssigned)
         }
         if let shortcutUsingEscape = isReservedByMacos(newCombos) {
@@ -88,10 +88,21 @@ class CustomRecorderControlTestable {
     }
 
     static func oldCombinationsExcludingTargetOfCandidate(_ candidateId: String) -> [(String, Shortcut)] {
+        combinations { isRecomputedInNewCombinations(candidateId, $0) }
+    }
+
+    /// Every chord the saved configuration produces today, with no candidate edit applied. Used to
+    /// tell a collision the edit introduces from one that was already there.
+    static func currentCombinations() -> [(String, Shortcut)] {
+        combinations { _ in false }
+    }
+
+    /// hold × non-hold chords over the shortcut registry, skipping the ids `isExcluded` rejects.
+    private static func combinations(_ isExcluded: (String) -> Bool) -> [(String, Shortcut)] {
         var holds = [ATShortcut]()
         var nonHolds = [ATShortcut]()
         for atShortcut in ControlsTab.shortcuts.values {
-            guard !isRecomputedInNewCombinations(candidateId, atShortcut.id)
+            guard !isExcluded(atShortcut.id)
                       && !(atShortcut.shortcut.keyCode == .none && atShortcut.shortcut.modifierFlags == []) else { continue }
             if atShortcut.id.starts(with: "holdShortcut") {
                 holds.append(atShortcut)
@@ -120,19 +131,27 @@ class CustomRecorderControlTestable {
         return nil
     }
 
-    static func isAlreadyUsedByAnotherShortcut(_ newCombos: [(String, Shortcut)] , _ oldCombos: [(String, Shortcut)]) -> String? {
+    static func isAlreadyUsedByAnotherShortcut(_ newCombos: [(String, Shortcut)], _ oldCombos: [(String, Shortcut)], _ currentCombos: [(String, Shortcut)]) -> String? {
         for newCombo in newCombos {
-            for oldCombo in oldCombos {
-                guard !(newCombo.0 == oldCombo.0) else { continue }
-                if (newCombo.1.keyCode == oldCombo.1.keyCode && newCombo.1.modifierFlags == oldCombo.1.modifierFlags)
-                    // special case when 2 nextWindowShortcuts are modifiers-only (e.g. S1: alt + shift, S2: alt+command + shift)
-                    // they will conflict if they their holdShortcuts are included in the other's holdShortcuts
-                    || (newCombo.1.keyCode == .none && oldCombo.1.keyCode == .none && (newCombo.1.modifierFlags.isSuperset(of: oldCombo.1.modifierFlags) || oldCombo.1.modifierFlags.isSuperset(of: newCombo.1.modifierFlags))) {
-                    return oldCombo.0
-                }
+            for oldCombo in oldCombos where newCombo.0 != oldCombo.0 {
+                guard chordsCollide(newCombo.1, oldCombo.1) else { continue }
+                // The 2 already collided before the edit, so the edit doesn't introduce that collision.
+                // Reporting it blocks an unrelated change, naming a shortcut the user isn't editing and
+                // can only "fix" by sacrificing it (#5455). A saved configuration is never re-validated,
+                // so one written before a validation hole was plugged still carries such a pair.
+                guard !currentCombos.contains(where: { $0.0 == newCombo.0 && chordsCollide($0.1, oldCombo.1) }) else { continue }
+                return oldCombo.0
             }
         }
         return nil
+    }
+
+    /// 2 chords can't coexist when they are the same key+modifiers, or when both are modifiers-only
+    /// and one's modifiers contain the other's (e.g. S1: ⌥+⇧, S2: ⌘⌥+⇧, where pressing ⇧ while
+    /// holding ⌘⌥ satisfies both).
+    static func chordsCollide(_ a: Shortcut, _ b: Shortcut) -> Bool {
+        (a.keyCode == b.keyCode && a.modifierFlags == b.modifierFlags)
+            || (a.keyCode == .none && b.keyCode == .none && (a.modifierFlags.isSuperset(of: b.modifierFlags) || b.modifierFlags.isSuperset(of: a.modifierFlags)))
     }
 
     /// commandTab and commandKeyAboveTab are self-contained in the "nextWindowShortcut" shortcuts

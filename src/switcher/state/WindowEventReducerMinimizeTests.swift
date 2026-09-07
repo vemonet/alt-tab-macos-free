@@ -78,16 +78,18 @@ final class WindowEventReducerMinimizeTests: XCTestCase {
 
     // MARK: - A. The captured sequence
 
-    /// The bug as reported: after the Dock restore the window must be back at the front and no longer flagged
-    /// minimized. Without the fix it ends `isMinimized=true` at rank 2 — which with
-    /// `showMinimizedWindows == .showAtTheEnd` renders it at the very back of the list, so the reporter's
-    /// quick alt+tabs kept toggling between the two OTHER windows and never reached it.
-    func testRestoringFromTheDockFrontsTheWindowAndClearsTheFlag() {
+    /// The bug as reported, in the half the events own: after the Dock restore the window must no longer be
+    /// flagged minimized. Without it the window ends `isMinimized=true`, and with
+    /// `showMinimizedWindows == .showAtTheEnd` that renders it at the very back of the list, so the
+    /// reporter's quick alt+tabs kept toggling between the two OTHER windows and never reached it.
+    ///
+    /// The ORDER is deliberately not asserted: an 815 is not a statement about what the user is looking at,
+    /// so the restored window reaches the front when its app says it has focus, not because it was ordered
+    /// in. Covered live by QA.
+    func testRestoringFromTheDockClearsTheFlag() {
         let runner = TestReducerRunner(initial: desktop())
         runner.run(dockRestoreSteps())
         XCTAssertEqual(minimized(runner.state, Self.restoredWid), false)
-        XCTAssertEqual(order(runner.state, Self.restoredWid), 0)
-        XCTAssertEqual(order(runner.state, Self.siblingWid), 1)
         XCTAssertTrue(runner.violations.isEmpty, runner.violations.joined(separator: "\n"))
     }
 
@@ -102,11 +104,11 @@ final class WindowEventReducerMinimizeTests: XCTestCase {
             "the un-minimize must be a named fact in the log, not a silent state change: \(runner.trace)")
     }
 
-    // MARK: - B. Which order-ins earn the front
+    // MARK: - B. Clearing the flag moves nothing
 
-    /// A background app deminiaturizing one of its own windows is not a raise: the flag still clears (the
-    /// window IS on screen again), but the MRU must not move, or any app restoring a window behind your back
-    /// steals slot 0. The `isActive` guard the un-minimize rides through is kept for exactly this.
+    /// A background app deminiaturizing one of its own windows: the flag clears, because the window IS on
+    /// screen again, and the MRU does not move. Clearing a state bit is not a claim about where the user is,
+    /// and the two have to stay separable — an app restoring a window behind your back must not take slot 0.
     func testABackgroundAppsRestoreClearsTheFlagWithoutStealingTheFront() {
         let runner = TestReducerRunner(initial: desktop(frontmost: Self.finderPid))
         runner.run([.input(.windowOrderedOut(wid: Self.restoredWid, inSpaceTransition: false)),
@@ -118,36 +120,14 @@ final class WindowEventReducerMinimizeTests: XCTestCase {
     }
 
     /// The counterfactual that keeps #5849 safe: a Space re-show orders in every window of the Space it is
-    /// bringing back, and that is neither a raise nor a focus. Those windows were never minimized, so they
-    /// take no front — the un-minimize exemption keys on the flag precisely so it cannot widen into this.
+    /// bringing back. Those windows were never minimized, so the un-minimize path must not touch them —
+    /// it keys on the flag precisely so it cannot widen into this — and the order stands either way.
     func testASpaceReShowStillDoesNotFrontItsWindows() {
         let runner = TestReducerRunner(initial: desktop())
         runner.run([.input(.windowOrderedOut(wid: Self.siblingWid, inSpaceTransition: false)),
                     .input(.windowOrderedIn(wid: Self.siblingWid, now: 6.0, inSpaceTransition: false))])
         XCTAssertEqual(order(runner.state, Self.siblingWid), 2, "came back on screen, so it is not a raise")
         XCTAssertEqual(order(runner.state, Self.restoredWid), 0)
-    }
-
-    /// ...and the other counterfactual, which the same condition must not break: an in-app raise (Cmd+`) has
-    /// no order-out in front of it, so it still bumps. This is the #5875 path; it shares the one `if`.
-    func testAnInAppRaiseStillFrontsItsWindow() {
-        let runner = TestReducerRunner(initial: desktop())
-        runner.run([.input(.windowOrderedIn(wid: Self.siblingWid, now: 6.0, inSpaceTransition: false))])
-        XCTAssertEqual(order(runner.state, Self.siblingWid), 0)
-        XCTAssertEqual(order(runner.state, Self.restoredWid), 1)
-    }
-
-    /// A restore that lands mid Space-transition is still muted, as every order-in there is: the transition's
-    /// own re-show is indistinguishable from anything else while it is in flight, and the post-transition
-    /// reconcile covers it. The flag is untouched too — this branch returns before any of it.
-    func testARestoreInsideASpaceTransitionIsMuted() {
-        let runner = TestReducerRunner(initial: desktop())
-        runner.run([.input(.windowOrderedOut(wid: Self.restoredWid, inSpaceTransition: false)),
-                    .input(.windowServerStateRead([snapshot(Self.restoredWid, isMinimized: true)])),
-                    .input(.windowFocused(wid: Self.siblingWid, now: 3.0)),
-                    .input(.windowOrderedIn(wid: Self.restoredWid, now: 6.0, inSpaceTransition: true))])
-        XCTAssertEqual(order(runner.state, Self.restoredWid), 1, "not fronted while a Space is in flight")
-        XCTAssertEqual(order(runner.state, Self.siblingWid), 0)
     }
 
     // MARK: - C. Repainting a switcher that is already open
@@ -223,6 +203,67 @@ final class WindowEventReducerMinimizeTests: XCTestCase {
         XCTAssertEqual(minimized(runner.state, backgroundTabWid), false,
             "the inactive tab must follow its active tab out of the minimized state")
     }
+
+    // MARK: - E. The on-screen bit that tab-grouping reads (#5954)
+
+    /// Every path that can move the bit, pinned: without these, each line carrying it from the OS to the
+    /// kernel could be deleted with the whole suite still green, which is how it shipped the first time.
+    /// The rule it feeds lives in `TabGroupResolver` (an on-screen window is nobody's background tab); here
+    /// we only prove the fact reaches it.
+    func testOrderInSetsTheOnScreenBitAndOrderOutClearsIt() {
+        var s = state([window(1, Self.chromePid, order: 0)], frontmost: Self.chromePid)
+        _ = WindowEventReducer.reduce(&s, .windowOrderedIn(wid: 1, now: 10, inSpaceTransition: false))
+        XCTAssertTrue(s.windows[0].isOrderedIn)
+        _ = WindowEventReducer.reduce(&s, .windowOrderedOut(wid: 1, inSpaceTransition: false))
+        XCTAssertFalse(s.windows[0].isOrderedIn)
+    }
+
+    /// A move or resize is NOT an order-out. Both arrive through the same reducer branch, with `orderedIn`
+    /// false meaning "this is not an order-in", so writing the bit from that parameter asserted that every
+    /// window being dragged said it had left the screen — and entering fullscreen is a resize storm, i.e.
+    /// exactly the moment the rule has to hold.
+    func testAMoveOrResizeLeavesTheOnScreenBitAlone() {
+        var s = state([window(1, Self.chromePid, order: 0)], frontmost: Self.chromePid)
+        _ = WindowEventReducer.reduce(&s, .windowOrderedIn(wid: 1, now: 10, inSpaceTransition: false))
+        _ = WindowEventReducer.reduce(&s, .windowMovedOrResized(wid: 1, inSpaceTransition: false))
+        XCTAssertTrue(s.windows[0].isOrderedIn)
+    }
+
+    /// The batched WindowServer query re-syncs the bit, which is the only correction for a window whose
+    /// order events we missed.
+    func testTheWindowServerQueryResyncsTheOnScreenBit() {
+        var s = state([window(1, Self.chromePid, order: 0)], frontmost: Self.chromePid)
+        _ = WindowEventReducer.reduce(&s, .windowOrderedIn(wid: 1, now: 10, inSpaceTransition: false))
+        _ = WindowEventReducer.reduce(&s, .windowServerStateRead([WsWindowSnapshot(wid: 1,
+            position: CGPoint(x: 0, y: 33), size: CGSize(width: 1470, height: 923),
+            isFullscreen: false, isVisible: false)]))
+        XCTAssertFalse(s.windows[0].isOrderedIn)
+    }
+
+    /// Discovery seeds it from the same WindowServer row it discriminated the window on. At cold start no
+    /// order event ever fires for a window that was already open, so without this seed the rule is unarmed
+    /// exactly when a whole desktop of same-frame windows arrives at once.
+    func testDiscoverySeedsTheOnScreenBit() {
+        var s = state([window(1, Self.chromePid, order: 0)], frontmost: Self.chromePid)
+        _ = WindowEventReducer.reduce(&s, .discoveryLanded(wid: 1, accepted: true, newlyTracked: true,
+            adoptedAsInactiveTab: false, queriedSpaceIds: [1], isOrderedIn: true, tabTitles: nil, tabGroupToken: nil))
+        XCTAssertTrue(s.windows[0].isOrderedIn)
+    }
+
+    /// ...except for a window discovery already knows is a background tab: its row is stale, and we know the
+    /// answer. Same reasoning as the Space it is forced to give up.
+    func testAnAdoptedInactiveTabIsNeverSeededOnScreen() {
+        var s = state([window(1, Self.chromePid, order: 0)], frontmost: Self.chromePid)
+        _ = WindowEventReducer.reduce(&s, .discoveryLanded(wid: 1, accepted: true, newlyTracked: true,
+            adoptedAsInactiveTab: true, queriedSpaceIds: [1], isOrderedIn: true, tabTitles: nil, tabGroupToken: nil))
+        XCTAssertFalse(s.windows[0].isOrderedIn)
+    }
+
+    /// The projection is the last link in the chain: the kernels see `TabWindow`, so a bit the projection
+    /// drops is a bit the rule never reads, and no kernel test can tell.
+    func testTheKernelProjectionCarriesTheOnScreenBit() {
+        var s = state([window(1, Self.chromePid, order: 0)], frontmost: Self.chromePid)
+        _ = WindowEventReducer.reduce(&s, .windowOrderedIn(wid: 1, now: 10, inSpaceTransition: false))
+        XCTAssertTrue(s.tabWindow(s.windows[0]).isOrderedIn)
+    }
 }
-
-

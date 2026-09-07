@@ -28,6 +28,9 @@ Both share a **bundle-id prefix gate**: an exception applies to an app iff the e
   while the active window is fullscreen; `.none` never.
 - **Gate guards**: an empty exception `bundleIdentifier` must not match every app; a nil app bundle-id
   never matches; any matching exception in the list is enough.
+- **Fullscreen context**: exact attention uses the named window's state, even when a fullscreen sibling exists.
+  App-only, unknown, or an exact identity not yet represented keep the conservative active-window/current-Space
+  fallback so a tracking gap cannot re-enable shortcuts inside a fullscreen remote session.
 
 ## Test scenarios
 

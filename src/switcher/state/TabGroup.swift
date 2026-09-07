@@ -82,8 +82,9 @@ class TabGroups {
 class TabGroup {
 
     /// Parse AXTabGroup children from a prior `.attributes([..., kAXChildrenAttribute])` call.
-    /// Returns tab titles if the window has tabs (always >= 2), nil otherwise.
-    static func extractTabTitles(_ children: [AXUIElement]?) -> [String]? {
+    /// Returns the tab titles (always >= 2) and the group's `TabGroupToken`, or nil when the window has no
+    /// tabs. Both halves come from ONE read and travel together into the reducer for that reason.
+    static func extractTabGroup(_ children: [AXUIElement]?) -> (titles: [String], token: TabGroupToken?)? {
         AXUIElement.tabGroupInfo(children)
     }
 

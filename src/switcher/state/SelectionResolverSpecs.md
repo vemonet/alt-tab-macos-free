@@ -2,6 +2,15 @@
 
 > **Line coverage:** `SelectionResolver.swift` 93% · _refreshed 2026-05-27 by `/coverage-explore`_
 
+## Where the hover highlight goes when the list changes (`reanchorHover`)
+
+- the hover follows the WINDOW it was on, not the position it occupied
+- a window inserted or removed before it moves its index, and the highlight moves with the window
+- a window that left the list takes its highlight with it: hover is cleared, never inherited by whoever
+  took the slot
+- no hover means no hover; there is nothing to re-anchor
+
+
 ## Summary
 
 `SelectionResolver` decides **which tile is highlighted** while the switcher is open. Every time the
@@ -48,10 +57,18 @@ tile past what the user asked for: alt-tab hands them a window they never chose,
 never comes back (#5941). `SelectionInputs.currentWindowIsDrawn` carries the answer; when it is false the
 pick is the FIRST drawn tile as of the summon rather than the second, and every other rule is untouched.
 
-The shell answers that question of the APP — "does some drawn tile belong to the frontmost app" — not of the
-window. The strict question ("is the frontmost app's focused window drawn") reads `application.focusedWindow`,
-which can be stale or nil, and answering it wrongly puts the default on the window the user is already
-looking at. The app-level question can only be false when the current window is genuinely absent.
+`SelectionResolver.currentWindowIsDrawn` answers it of the APP — "is a window of the frontmost app that
+could BE the current one being kept out of the list" — not of the window. The strict question ("is the
+frontmost app's focused window drawn") reads `application.focusedWindow`, which can be stale or nil, and
+answering it wrongly puts the default on the window the user is already looking at.
+
+Only windows that cannot be the one on screen are skipped: a windowless placeholder, a phantom, a minimized
+window. An app owning nothing else is not having anything hidden from the user, so the ordinary rule applies.
+Reading it as "does some drawn tile belong to the frontmost app" was #5960: closing the last window of the
+frontmost app leaves it running and still frontmost with only a placeholder, `Windowless apps: Hide` drops
+that, and the pick stopped stepping over a front tile that was the very window on top of the screen — alt-tab
+handed the user the window they were already looking at, and the two-window toggle took two presses to start.
+An app left with only minimized windows under `Minimized windows: Hide` had the same shape.
 
 That makes the answer exact for the filters that drop a whole app (`Non-active apps`, an Exceptions rule) and
 deliberately coarse for the two that can drop the current window while a SIBLING window of the same app stays
@@ -83,8 +100,8 @@ so no event can land in between.
 ## Test scenarios
 
 Mirrors `SelectionResolverTests.swift` 1:1. Groups: A initial pick · B preserve target (#5665) ·
-C target removed · D search mode · E edge cases · F current window not drawn (#5941) · plus direct
-helper-kernel checks.
+C target removed · D search mode · E edge cases · F current window not drawn (#5941) · G answering that
+question from the frontmost app's windows (#5960) · plus direct helper-kernel checks.
 
 ### A. Initial pick (`selectedTarget == nil`)
 - **testInitialPickEmptyList** — no windows → `clearTargetAndHover`.
@@ -145,6 +162,33 @@ helper-kernel checks.
   followed by id (#5665); the flag only says where the DEFAULT starts.
 - **testInitialPickTopTwoMinimizedIsUnaffectedByTheFlag** — the both-top-minimized edge never stepped over
   anything, and still doesn't.
+
+### G. Answering `currentWindowIsDrawn` from the frontmost app's windows (#5960)
+
+An exact attention identity is used only while that window can still be the drawn front window. A minimized,
+phantom, windowless, or background-tab identity is stale by construction; the shell then answers from the
+frontmost application's viable windows. This covers the handoff after minimizing the exact window and the brief
+tab-switch interval where attention still names the outgoing background tab.
+- **testCurrentWindowIsDrawnIsFalseWhenARealWindowIsFilteredOut** — the #5941 case the flag exists for.
+- **testCurrentWindowIsDrawnIsTrueWhenTheRealWindowIsDrawn** — its control.
+- **testCurrentWindowIsDrawnIsTrueWhenOnlySomeWindowsAreFilteredOut** — one tile of the app is drawn.
+- **testCurrentWindowIsDrawnIsTrueForAWindowlessFrontmostApp** — #5960: the last window was closed and
+  `Windowless apps: Hide` drops the placeholder; nothing of theirs is hidden, so the front tile is stepped over.
+- **testCurrentWindowIsDrawnIsTrueForADrawnWindowlessPlaceholder** — the same app with the placeholder shown.
+- **testCurrentWindowIsDrawnIsTrueWhenOnlyMinimizedWindowsAreHidden** — a minimized window is not one the
+  user can be looking at.
+- **testCurrentWindowIsDrawnIsTrueWhenTheOnlyWindowIsADrawnMinimizedOne** — the answer does not depend on the
+  minimized filter either way.
+- **testCurrentWindowIsDrawnIsTrueWhenTheOnlyWindowIsPhantom** — a window we say does not exist cannot be the
+  one being hidden.
+- **testCurrentWindowIsDrawnIsFalseWhenAPlaceholderAccompaniesAFilteredOutWindow** — the real window still
+  answers.
+- **testCurrentWindowIsDrawnIsTrueWhenTheAppHasNoWindows** — nothing tracked for the frontmost app.
+- **testExactAttentionAnswersForTheWindowRatherThanItsApplication** — when attention identifies the current
+  window, its own filter result decides even if a sibling from the same app remains drawn.
+- **testUnknownAttentionPreservesTheOrdinaryRule** — missing evidence never becomes evidence of absence.
+- **testInitialPickStepsOverTheFrontTileAfterTheFrontmostAppLostItsLastWindow** — #5960 through both kernels,
+  on the reporter's own steps: the pick lands on the second tile, not the window already on screen.
 
 ### Helper kernels (direct)
 - **testGetLastFocusedOrderWindowIndexIgnoresWindowlessAndInvisible** — scan ignores windowless + invisible.

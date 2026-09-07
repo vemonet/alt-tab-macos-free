@@ -228,9 +228,9 @@
 "Show details (for support)" = "Pokaż szczegóły (dla pomocy technicznej)";
 "Show fullscreen windows" = "Pokaż okna na pełnym ekranie";
 "Show hidden windows" = "Pokaż ukryte okna";
-"Show main window" = "Pokaż okno główne";
 "Show minimized windows" = "Pokaż zminimalizowane okna";
 "Show on" = "Pokaż na";
+"Show one window per app" = "Pokaż jedno okno na aplikację";
 "Show separate window for each tab" = "Pokaż osobne okno dla każdej karty";
 "Show single window for all tabs" = "Pokaż pojedyncze okno dla wszystkich kart";
 "Show titles" = "Pokaż tytuły";

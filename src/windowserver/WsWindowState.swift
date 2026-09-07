@@ -9,6 +9,11 @@ struct WsRawWindow: Equatable {
     let level: Int32
     let spaceTypeMask: UInt64
     let title: String
+    /// Exact WindowServer attachment relationship. Native tab members remain independent roots (`0`), while
+    /// AppKit sheets and `addChildWindow` surfaces name their document window here.
+    var parentWid: CGWindowID = 0
+    /// WindowServer compositing alpha. `0` is a visibility/phantom fact, not semantic rejection.
+    var alpha: Float = 1
     /// window frame in top-left-origin global coordinates (origin = AX position, size = AX size). Defaulted
     /// so the pure-decode tests can build a `WsRawWindow` without it; `WindowServerQuery` fills it in live.
     var bounds: CGRect = .zero
@@ -45,7 +50,8 @@ enum WsWindowState {
     static let hiddenTag: UInt64 = 1 << 39
     /// `spaceTypeMask` bit set when the window lives on a fullscreen-type Space.
     static let fullscreenSpaceMask: UInt64 = 0x20
-    /// normal application windows sit at level 0; chrome (menu bar, Control Center, wallpaper) does not.
+    /// Most application windows sit at level 0. This is an acquisition hint, not an admission rule: floating
+    /// documents, presentation windows and custom toolkits legitimately use other levels.
     static let applicationWindowLevel: Int32 = 0
 
     /// On screen / ordered-in. This is NOT "not minimized": an ordered-out window may be minimized, app-hidden,
@@ -67,9 +73,7 @@ enum WsWindowState {
         w.spaceTypeMask & fullscreenSpaceMask != 0
     }
 
-    /// A coarse discrimination hint, NOT a subrole replacement: level 0 separates real app windows from
-    /// chrome, but cannot tell `AXStandardWindow` from `AXDialog`/`AXUnknown` (tags don't encode that
-    /// cleanly). The precise accept/reject still needs the AX subrole in `WindowDiscriminator`.
+    /// A coarse acquisition hint, not a switch-destination verdict.
     static func isApplicationWindowLevel(_ w: WsRawWindow) -> Bool {
         w.level == applicationWindowLevel
     }

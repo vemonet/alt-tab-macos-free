@@ -223,7 +223,7 @@ enum GroupAppsPreference: CaseIterable, MacroPreference {
 
     var localizedString: LocalizedString {
         switch self {
-            case .mainWindow: return NSLocalizedString("Show main window", comment: "")
+            case .mainWindow: return NSLocalizedString("Show one window per app", comment: "")
             case .allWindows: return NSLocalizedString("Show all windows", comment: "")
         }
     }

@@ -147,16 +147,20 @@ final class TestReducerRunner {
         case .scheduleHoldReleaseCheck, .scheduleDragOutCheck:
             pendingTimers.append(effect)
         case .discoverWindow, .probeWindowLiveness, .readTitleAndTabs, .queryWindowServerState,
-             .discoverInactiveTabs, .refreshSpacesTopology, .refreshSpacesTopologyAndSync:
+             .discoverInactiveTabs, .reconcileAxElementEnd,
+             .refreshSpacesTopology, .refreshSpacesTopologyAndSync:
             pendingRequests.append(effect)
         case .log(let line):
             trace.append("[\(stepIndex)] \(line)")
         case .refreshUi(let wids, let onlyWhileSwitcherOpen):
             refreshes.append((wids, onlyWhileSwitcherOpen))
+        case .refreshUiImmediately(let wids):
+            refreshes.append((wids, false))
         case .deferCaptureUntilRestoreEnds(let wid):
             deferredCaptures.append(wid)
         case .copyThumbnail, .applyFocus, .updateScreenId, .removeWindowlessPlaceholder,
-             .addWindowlessPlaceholder, .bumpFocusViaAxBackstop, .checkShortcutsForFocusedWindow:
+             .addWindowlessPlaceholder, .readFocusedWindowOnActivation,
+             .checkShortcutsForFocusedWindow, .retireSurface:
             break  // display/AppKit-side; no model content beyond what the reducer already wrote
         }
     }
@@ -203,6 +207,7 @@ final class TestReducerRunner {
         switch input {
         case .windowCreated(_, let now, _), .windowOrderedIn(_, let now, _),
              .windowFocused(_, let now), .appActivated(_, let now, _),
+             .altTabFocusedWindowInFrontmostApp(_, _, let now),
              .spaceMembershipChanged(_, _, _, let now, _):
             return now
         default:

@@ -15,12 +15,34 @@ extension AXUIElement {
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), globalMessagingTimeoutInSeconds)
     }
 
+    /// **A failed call is not an answer.** Anything but `.success` means the OS told us nothing about this
+    /// element, and the two failure shapes need different handling, so they get different errors:
+    /// `.cannotComplete` is the messaging timeout of a busy app and may succeed later (`AXCallScheduler`
+    /// retries it); every other error is permanent for this call (a dead element, an attribute the app does
+    /// not implement, an app refusing the API for its own reasons) and retrying only spends the app's budget.
+    ///
+    /// Neither may be read as a fact. Returning a zero-filled `AXAttributes` for a failed read is what let one
+    /// unanswered call remove a live window from the switcher: `role` and `subrole` came back nil, and
+    /// `WindowAdmissionResolver` rightly rejects a surface with no window role — except the app never said it
+    /// had none. Same lesson as `castSafely`'s `.axError` placeholders and the empty-Space rule, one level up.
     private func throwIfNotSuccess(_ result: AXError) throws -> Void {
-        // .cannotComplete can happen if the app is unresponsive
-        if result == .cannotComplete {
-            throw AxError.runtimeError
-        }
-        // for success or other errors we don't throw
+        if result == .success { return }
+        throw result == .cannotComplete ? AxError.appUnresponsive : AxError.noAnswer
+    }
+
+    /// **The only place `AXObserverAddNotification` is called.**
+    ///
+    /// `subscribeToNotification` below collapses every failure into a Bool or a throw, which suits its
+    /// callers and does not suit `AxObserverRegistry`, whose health policy keys on the exact `AXError` (a
+    /// per-notification `notificationUnsupported` must not mark the whole observer unhealthy). Both shapes
+    /// go through here.
+    ///
+    /// Worth knowing when reading its count: the cost is per FIRST call to a process (~25ms, the
+    /// accessibility handshake), and ~0.1ms for every further registration on the same observer and element.
+    /// So the total tracks how many apps are subscribed, not how many notifications each one takes.
+    func addNotification(_ axObserver: AXObserver, _ notification: String,
+                         _ refcon: UnsafeMutableRawPointer? = nil) -> AXError {
+        AXObserverAddNotification(axObserver, self, notification as CFString, refcon)
     }
 
     @discardableResult
@@ -28,7 +50,7 @@ extension AXUIElement {
         // `refcon` is handed back verbatim to the AX callback for every delivery of this (element,
         // notification) pair. The only remaining caller is DockEvents (Mission Control), which passes nil;
         // the packed-(pid, wid) refcon scheme this supported went away with the per-window AX observers.
-        let result = AXObserverAddNotification(axObserver, self, notification as CFString, refcon)
+        let result = addNotification(axObserver, notification, refcon)
         if result == .success || result == .notificationAlreadyRegistered {
             return true
         }
@@ -37,7 +59,7 @@ extension AXUIElement {
             return false
         }
         // temporary issue; subscription may succeed if retried
-        throw AxError.runtimeError
+        throw AxError.appUnresponsive
     }
 }
 
@@ -176,19 +198,13 @@ extension AXUIElement {
         }
     }
 
-    /// The app's windows on the CURRENT Space (AX `kAXWindows`); does NOT return other-Space windows — use
-    /// `windowByBruteForce` to resolve a specific other-Space wid.
-    func windows() throws -> [AXUIElement] {
-        let windows = try attributes([kAXWindowsAttribute]).windows
-        if let windows,
-           !windows.isEmpty {
-            // bug in macOS: sometimes the OS returns multiple duplicate windows (e.g. Mail.app starting at login)
-            let uniqueWindows = Array(Set(windows))
-            if !uniqueWindows.isEmpty {
-                return uniqueWindows
-            }
-        }
-        return []
+    /// The window elements an app hands us for one batched read, per `PublishedWindows` — `kAXWindows` (the
+    /// CURRENT Space only) plus the two window attributes AppKit does NOT put behind that Space filter. Same
+    /// single round trip either way, so the other-Space reach costs no IPC. The specs hold the why.
+    func windowsIncludingKeyAndMain() throws -> [AXUIElement] {
+        let attributes = try attributes(PublishedWindows.attributes)
+        return PublishedWindows.merge(windows: attributes.windows, focused: attributes.focusedWindow,
+                                      main: attributes.mainWindow)
     }
 
     /// Wall-clock budget for any brute-force AX scan. The AXUIElementID space is `UInt64` and a long-lived app's
@@ -198,8 +214,8 @@ extension AXUIElement {
     static let bruteForceBudgetMs: Double = 250
 
     /// Build an element per AXUIElementID for `pid` from a remote token (`_AXUIElementCreateWithRemoteToken` —
-    /// the only way to reach windows absent from every CGS list: other-Space windows and inactive OS tabs) and
-    /// hand it to `inspect`, until `inspect` returns true (it found what it wanted) or the budget elapses.
+    /// the only way to reach elements the app omits from `kAXWindows`, including other-Space windows and
+    /// inactive OS tabs) and hand it to `inspect`, until `inspect` returns true or the budget elapses.
     /// IPC per id — off the main thread only. The token's id field is the only part rewritten per iteration.
     ///
     /// Returns the id the sweep stopped at, so a caller that can be RETRIED resumes instead of re-walking the
@@ -212,14 +228,26 @@ extension AXUIElement {
     private static func bruteForceElements(_ pid: pid_t, from startId: AXUIElementID = 0,
                                            _ inspect: (AXUIElement) -> Bool) -> AXUIElementID {
         // 20 bytes: pid (4) + 0 (4) + magic 0x636f636f "coco" (4) + AXUIElementID (8); byte order matters.
-        var remoteToken = Data(count: 20)
-        remoteToken.replaceSubrange(0..<4, with: withUnsafeBytes(of: pid) { Data($0) })
-        remoteToken.replaceSubrange(4..<8, with: withUnsafeBytes(of: Int32(0)) { Data($0) })
-        remoteToken.replaceSubrange(8..<12, with: withUnsafeBytes(of: Int32(0x636f636f)) { Data($0) })
+        // ONE mutable CFData for the whole sweep, with only the id field rewritten in place. Building a fresh
+        // `Data` per field and bridging it to `CFData` per candidate allocated twice per iteration, and this
+        // loop runs thousands of iterations inside its 250ms budget: on a 51s Instruments trace it was 7.5% of
+        // the process's entire malloc/free traffic, second only to the state snapshot.
+        // Safe because the element does NOT alias the token: measured on TextEdit (two AXWindow roots captured
+        // from one reused buffer, then 30k further mutations parked on another id) both kept their own wid and
+        // role, so `_AXUIElementCreateWithRemoteToken` parses the bytes rather than retaining them.
+        guard let remoteToken = CFDataCreateMutable(kCFAllocatorDefault, 20) else { return startId }
+        CFDataSetLength(remoteToken, 20)
+        guard let bytes = CFDataGetMutableBytePtr(remoteToken) else { return startId }
+        memset(bytes, 0, 20)
+        var pidField = pid
+        memcpy(bytes, &pidField, 4)
+        var magic = Int32(0x636f636f)
+        memcpy(bytes + 8, &magic, 4)
         let timer = LightweightTimer()
         for axUiElementId: AXUIElementID in startId..<AXUIElementID.max {
-            remoteToken.replaceSubrange(12..<20, with: withUnsafeBytes(of: axUiElementId) { Data($0) })
-            if let candidate = _AXUIElementCreateWithRemoteToken(remoteToken as CFData)?.takeRetainedValue(),
+            var idField = axUiElementId
+            memcpy(bytes + 12, &idField, 8)
+            if let candidate = _AXUIElementCreateWithRemoteToken(remoteToken)?.takeRetainedValue(),
                inspect(candidate) {
                 return axUiElementId + 1
             }
@@ -228,28 +256,34 @@ extension AXUIElement {
         return AXUIElementID.max
     }
 
-    /// Resolve the AX element for ONE other-Space wid (there is no wid→element API). Returns the INSTANT a
-    /// candidate is the target's WINDOW element — matching by wid (rather than collecting every window and
-    /// reading a subrole per id) early-exits near the target's index, reaching far higher ids within the
-    /// budget. Subrole is judged downstream by the discriminator; here we only locate — but locating must
-    /// check the ROLE: `_AXUIElementGetWindow` on ANY descendant returns the CONTAINING window's id, so every
-    /// button/toolbar of the target also matches its wid, and a tabbed window's "tab bar" element routinely
-    /// gets a LOWER AXUIElementID than the window element itself. Returning the first wid match handed the
-    /// discriminator that tab bar (role AXTabGroup, subrole nil), which it rightly rejected — so the launch
-    /// scan consistently missed every TABBED window until the first show's rescan got luckier (rec17). The
-    /// role read costs IPC only on the target's own descendants: other elements fail the cheap wid guard.
-    static func windowByBruteForce(_ pid: pid_t, _ wid: CGWindowID) -> AXUIElement? {
-        var found: AXUIElement?
+    /// Resolve every requested other-Space wid in ONE AXUIElementID traversal. The inventory knows all of a
+    /// process's missing wids at once; scanning once per wid repeated the same id prefix and spent a separate
+    /// 250ms budget on every non-window surface. This shares one budget and stops when every requested root is
+    /// found. It records no negative range: a later inventory starts a fresh traversal from id 0.
+    ///
+    /// `_AXUIElementGetWindow` on a descendant returns its CONTAINING window's wid too, so a wid match is not
+    /// enough. Read the role only for descendants of a requested wid and keep scanning until the `AXWindow`
+    /// root. This is the same #5849 invariant as the single-wid route below.
+    static func windowsByBruteForce(_ pid: pid_t, _ wids: Set<CGWindowID>) -> [CGWindowID: AXUIElement] {
+        guard !wids.isEmpty else { return [:] }
+        var remaining = wids
+        var found = [CGWindowID: AXUIElement]()
+        found.reserveCapacity(wids.count)
         bruteForceElements(pid) { candidate in
-            // Cheap wid gate first, so the role read costs IPC only on the target's own descendants; the
-            // root-vs-descendant verdict is the `BruteForceWindowMatch` kernel (#5849).
-            guard (try? candidate.cgWindowId()) == wid else { return false }
+            guard let wid = try? candidate.cgWindowId(), remaining.contains(wid) else { return false }
             let role = (try? candidate.attributes([kAXRoleAttribute]))?.role
             guard BruteForceWindowMatch.isTargetWindowRoot(candidateWid: wid, candidateRole: role, targetWid: wid) else { return false }
-            found = candidate
-            return true
+            found[wid] = candidate
+            remaining.remove(wid)
+            return remaining.isEmpty
         }
         return found
+    }
+
+    /// The event-driven and stale-element repair paths ask for one wid. Keep their interface and semantics on
+    /// the same multi-target implementation used by the inventory.
+    static func windowByBruteForce(_ pid: pid_t, _ wid: CGWindowID) -> AXUIElement? {
+        windowsByBruteForce(pid, [wid])[wid]
     }
 
     /// Find untracked standard windows whose title is one of `titles` — the only way to reach an INACTIVE OS
@@ -300,10 +334,9 @@ extension AXUIElement {
     /// `children` should come from the prior `.attributes([..., kAXChildrenAttribute])` call.
     ///
     /// **DIRECT children only, deliberately, and fullscreen windows are therefore not read here.** A
-    /// fullscreen window's tab bar is reachable — probed at length, see
-    /// `experimentations/TabbedWindowDetection.swift` — but only unevenly: Finder and Script Editor list the
-    /// containing AXGroup as a child, Terminal and TextEdit do not (their tab bar lives in a separate
-    /// NSToolbarFullScreenWindow that no downward walk reaches, only a coordinate hit-test).
+    /// fullscreen window's tab bar is reachable — probed at length — but only unevenly: Finder and Script
+    /// Editor list the containing AXGroup as a child, Terminal and TextEdit do not (their tab bar lives in a
+    /// separate NSToolbarFullScreenWindow that no downward walk reaches, only a coordinate hit-test).
     ///
     /// Descending one level was tried and REVERTED. It works, but it buys tab reading for SOME apps and not
     /// others, and that asymmetry is worse than the gap: a fullscreen active that can suddenly read its tabs
@@ -312,7 +345,14 @@ extension AXUIElement {
     /// a real window hidden, for a feature that is deliberately not needed. Fullscreen grouping is the
     /// geometry path's job: a fullscreen Space holds one window and its tabs, so the Space invariant plus
     /// Space-less-ness already identifies them.
-    static func tabGroupInfo(_ children: [AXUIElement]?) -> [String]? {
+    /// Returns the tab TITLES and the group's own identity (`TabGroupToken`), which is the `AXTabGroup`
+    /// element's `AXUIElementID`. The element was already in hand here and used to be discarded; every
+    /// window of a group hands out the same one while it is the selected tab, so it is a membership fact the
+    /// titles can only guess at. The BUTTONS are deliberately not kept: they are rebuilt by ordinary tab
+    /// operations (Finder rebuilds all of them on one Cmd+T) and each reports the SELECTED window's wid
+    /// rather than its own, so a button is neither stable nor self-naming. Measured on Finder, Terminal and
+    /// TextEdit.
+    static func tabGroupInfo(_ children: [AXUIElement]?) -> (titles: [String], token: TabGroupToken?)? {
         guard let children else { return nil }
         for child in children {
             let a = try? child.attributes([kAXRoleAttribute, kAXChildrenAttribute])
@@ -322,7 +362,7 @@ extension AXUIElement {
                 guard t?.subrole == "AXTabButton" else { return nil }
                 return t?.title ?? ""
             }
-            return titles.count >= 2 ? titles : nil
+            return titles.count >= 2 ? (titles, child.id()) : nil
         }
         return nil
     }
@@ -334,8 +374,15 @@ extension AXUIElement {
 /// we don't know how high it can go, and if it wraps around
 typealias AXUIElementID = UInt64
 
+/// Why an AX call produced no answer. The two are handled differently by `AXCallScheduler`: only
+/// `.appUnresponsive` is worth retrying. See `AXUIElement.throwIfNotSuccess`.
 enum AxError: Error {
-    case runtimeError
+    /// `.cannotComplete` — the messaging timeout expired on a busy app. Retryable.
+    case appUnresponsive
+    /// any other AX error — a dead element, an unimplemented attribute, an app refusing the API. Permanent
+    /// for this call: retrying re-asks a question that cannot be answered, and marking the app unresponsive
+    /// for it quarantines a process that is answering fine.
+    case noAnswer
 }
 
 struct AXAttributes {

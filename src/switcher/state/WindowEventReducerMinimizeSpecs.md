@@ -42,9 +42,9 @@ why this went unreported for so long.
 
 **The restore took no front.** When its app was already frontmost the restore emits ONLY the 815 — the same
 shape as Cmd+` — and `cameBackOnScreen` swallows the bump. That guard exists for Space re-shows (#5849) and
-cannot tell a Dock restore from one. When the app was NOT frontmost the restore activates it and
-`appActivated` → `axFocusedWindowRead` fronts the window a beat later, which is why the bug only bites on a
-same-app restore.
+cannot tell a Dock restore from one. When the app was NOT frontmost the restore activates it and the
+attention model uses the app's cached focused-window fact, or requests one bounded read if no fact exists.
+That fronts the window a beat later, which is why the bug only bites on a same-app restore.
 
 **And the panel may be OPEN while all this happens** (reported 2026-08-06). Minimizing from the switcher's
 "m" shortcut does not close it, so the un-minimize that follows lands on a tile the user is looking at, and
@@ -78,24 +78,22 @@ Mirrors `WindowEventReducerMinimizeTests.swift` 1:1.
 
 ### A. The captured sequence
 
-- **testRestoringFromTheDockFrontsTheWindowAndClearsTheFlag** — the reporter's own steps: after the restore
-  the window is at rank 0 and no longer minimized. Without the fix it ends `isMinimized=true` at rank 2.
+- **testRestoringFromTheDockClearsTheFlag** — the reporter's own steps: after the restore the window is no
+  longer minimized. Without the fix it ends `isMinimized=true`, which with `showMinimizedWindows ==
+  .showAtTheEnd` renders it at the very back of the list. The ORDER is not asserted: the restored window
+  reaches the front when its app says it has focus, not because it was ordered in (seen live).
 - **testTheOrderInAloneClearsTheMinimizedFlag** — no follow-up read is replayed, because on this path none
   of them is prompt (AX ~530ms, the WindowServer tag ~644ms). The flag must clear from the event alone, and
   say so in the log.
 
-### B. Which order-ins earn the front
+### B. Clearing the flag moves nothing
 
 - **testABackgroundAppsRestoreClearsTheFlagWithoutStealingTheFront** — an app deminiaturizing one of its own
-  windows while another app is frontmost is not a raise: the flag clears (the window IS back on screen), the
-  MRU does not move. The `isActive` guard the un-minimize rides through is kept for exactly this.
+  windows while another app is frontmost: the flag clears (the window IS back on screen) and the MRU does
+  not move. Clearing a state bit is not a claim about where the user is, and the two must stay separable.
 - **testASpaceReShowStillDoesNotFrontItsWindows** — the counterfactual that keeps #5849 safe: windows the OS
-  re-shows with a Space were never minimized, so they take no front. The exemption keys on the flag
-  precisely so it cannot widen into this.
-- **testAnInAppRaiseStillFrontsItsWindow** — the other counterfactual, #5875's path: an order-in with no
-  order-out in front of it is still a raise and still bumps. Both share the one `if`.
-- **testARestoreInsideASpaceTransitionIsMuted** — a restore landing mid-transition is muted like every other
-  order-in there; the post-transition reconcile covers it.
+  re-shows with a Space were never minimized, so the un-minimize path must not touch them. It keys on the
+  flag precisely so it cannot widen into this.
 
 ### C. Repainting a switcher that is already open
 
@@ -120,4 +118,23 @@ Mirrors `WindowEventReducerMinimizeTests.swift` 1:1.
 ## What no unit test can cover
 
 That the live Dock path emits the 815 at all, and that every queryable source lags it. Both are OS facts;
-they were established by measurement (above) and are re-checked by QA I-15 / I-16, not here.
+they were established by measurement (above) and are re-checked by live QA, not here.
+
+### E. The on-screen bit that tab-grouping reads (#5954)
+
+`TrackedWindow.isOrderedIn` is the WindowServer's ordered-in bit, and `TabGroupResolver` reads it to refuse
+folding a window the OS still shows (an on-screen window is nobody's background tab — a real background tab
+is ordered OUT, measured). The kernel rule has its own tests; these pin the PLUMBING, because every line
+carrying the bit from the OS to the kernel could be deleted with the suite green otherwise.
+
+- **testOrderInSetsTheOnScreenBitAndOrderOutClearsIt** — the 815/816 pair moves it.
+- **testAMoveOrResizeLeavesTheOnScreenBitAlone** — a 806/807 shares that reducer branch with `orderedIn:
+  false` meaning "not an order-in", and must not be read as "off screen"; entering fullscreen is a resize
+  storm, which is precisely when the rule has to hold.
+- **testTheWindowServerQueryResyncsTheOnScreenBit** — the batched query corrects a window whose order events
+  were missed.
+- **testDiscoverySeedsTheOnScreenBit** — seeded from the row discovery already holds, since no order event
+  fires for windows that were open before AltTab started.
+- **testAnAdoptedInactiveTabIsNeverSeededOnScreen** — except for a known background tab, whose row is stale.
+- **testTheKernelProjectionCarriesTheOnScreenBit** — `tabWindow` forwards it, the last link no kernel test
+  can check.

@@ -228,9 +228,9 @@
 "Show details (for support)" = "顯示詳細資料(供支援使用)";
 "Show fullscreen windows" = "顯示全螢幕視窗";
 "Show hidden windows" = "顯示隱藏的視窗";
-"Show main window" = "顯示主視窗";
 "Show minimized windows" = "顯示縮到最小的視窗";
 "Show on" = "顯示於";
+"Show one window per app" = "每個 App 顯示一個視窗";
 "Show separate window for each tab" = "為每個分頁顯示獨立視窗";
 "Show single window for all tabs" = "為所有分頁顯示單一視窗";
 "Show titles" = "顯示標題";

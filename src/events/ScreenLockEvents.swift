@@ -24,9 +24,8 @@ class ScreenLockEvents {
     @objc private static func handleUnlocked() {
         Logger.info { "" }
         isScreenLocked = false
+        AxObserverRegistry.shared.recoverAll(.unlock)
         // a locked/idle screen can let macOS disable our event taps (kCGEventTapDisabledByTimeout); re-enable on unlock (#5723)
         SleepWakeEvents.reEnableAllTaps()
-        // an unlock re-shows the session's windows, whether or not the display also woke (#5936)
-        TrackedWindowStateBridge.dispatch(.systemReshow(now: ProcessInfo.processInfo.systemUptime, source: .wake))
     }
 }

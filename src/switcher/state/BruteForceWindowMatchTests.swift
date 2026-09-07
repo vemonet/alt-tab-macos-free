@@ -1,11 +1,11 @@
 import XCTest
 
 /// Pins `BruteForceWindowMatch.isTargetWindowRoot` — the decision extracted from
-/// `AXUIElement.windowByBruteForce`. Pure data in, `Bool` out: no AX, no IPC, no globals.
+/// `AXUIElement.windowsByBruteForce`. Pure data in, `Bool` out: no AX, no IPC, no globals.
 ///
 /// The #5849 regression: `_AXUIElementGetWindow` returns the containing window's id for a window's
 /// DESCENDANTS too, so a brute-force scan that stopped at the first wid match returned a descendant
-/// (`AXOutline` / `AXMenuButton` / `AXGroup`) instead of the `AXWindow` root, and the discriminator
+/// (`AXOutline` / `AXMenuButton` / `AXGroup`) instead of the `AXWindow` root, and admission
 /// dropped the window entirely. These tests guarantee only the `AXWindow` root for the target wid is
 /// accepted, so a descendant sharing the wid can never win the scan again.
 final class BruteForceWindowMatchTests: XCTestCase {
@@ -71,7 +71,28 @@ final class BruteForceWindowMatchTests: XCTestCase {
         XCTAssertEqual(picked, 1, "the scan must skip the earlier AXOutline and select the AXWindow root")
     }
 
-    // MARK: - E. Whose tab is it? (the 2026-08-01 cross-window adoption)
+    // MARK: - E. One traversal can collect several target roots
+
+    func testBatchCollectsEveryRequestedRootWithoutAcceptingDescendants() {
+        let requested: Set<CGWindowID> = [Self.targetWid, Self.otherWid]
+        let candidates: [(wid: CGWindowID?, role: String?)] = [
+            (Self.targetWid, kAXOutlineRole),
+            (Self.targetWid, kAXWindowRole),
+            (777, kAXWindowRole),
+            (Self.otherWid, kAXGroupRole),
+            (Self.otherWid, kAXWindowRole),
+        ]
+        var remaining = requested
+        for candidate in candidates {
+            guard let wid = candidate.wid, remaining.contains(wid),
+                  BruteForceWindowMatch.isTargetWindowRoot(
+                    candidateWid: wid, candidateRole: candidate.role, targetWid: wid) else { continue }
+            remaining.remove(wid)
+        }
+        XCTAssertTrue(remaining.isEmpty, "one traversal must collect both roots and ignore their earlier descendants")
+    }
+
+    // MARK: - F. Whose tab is it? (the 2026-08-01 cross-window adoption)
 
     /// The two Finder windows of the QA capture: parked 520pt apart, every tab titled "lwouis".
     private static let requester = CGRect(x: 80, y: 80, width: 1000, height: 440)
@@ -93,7 +114,7 @@ final class BruteForceWindowMatchTests: XCTestCase {
 
     /// Merge All Windows never converges the absorbed windows' frames: they keep their own cascade positions,
     /// frozen, one 29px step apart from each other and from the merged window. Demanding a match with the
-    /// requester would make those tabs permanently un-adoptable (T-03/T-04), so a frame that sits on NOTHING
+    /// requester would make those tabs permanently un-adoptable, so a frame that sits on NOTHING
     /// is waved through.
     func testAdoptsAMergedTabAtItsOwnFrozenCascadePosition() {
         let merged = CGRect(x: 942, y: 277, width: 757, height: 543)

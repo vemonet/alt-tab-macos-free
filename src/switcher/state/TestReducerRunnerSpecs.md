@@ -96,14 +96,14 @@ the scenario layer drives it, and its per-step invariants police every scenario.
 
 ## What stayed in the shell, and why
 
-- **Acquisition + discrimination + attribute ingestion** (`WindowDiscriminator`, `findOrCreate`,
+- **Acquisition + admission + attribute ingestion** (`WindowAdmissionResolver`, `findOrCreate`,
   `bestEffortTitle`): AX/CGS IPC and object creation; the reducer takes over at `discoveryLanded`.
 - **Throttling/coalescing** (`windowAttributesThrottler` etc.): IO pacing, carried on effects as flags.
 - **`Windows.removeWindows`**: view/scheduler/subscription cleanup stays live; the reducer decides WHEN
   (`removeWindow` effect) and the harness twins the model part. The MRU-shift semantics exist twice
   (live + harness twin) — the one accepted duplication.
-- **Timers** (`armHoldReleaseCheck`/`armDragOutCheck`), the NSWorkspace observers, the AX backstop's
-  focused-window read, the Space-transition debounce, `Window.init`'s `checkIfFocused` seed, and the
+- **Timers** (`armHoldReleaseCheck`/`armDragOutCheck`), the NSWorkspace observers, the factless activation's
+  bounded focused-window read, the Space-transition debounce, `Window.init`'s `checkIfFocused` seed, and the
   full-rescan sweeps (`discardDeadPhantomWindows`) — pure IO or init-time seeding.
 
 ## Test scenarios
@@ -124,7 +124,7 @@ report a violation. These are tests OF the harness, not of the reducer.
   ejection).
 - **testHarnessFlagsARepresentativeThatIgnoresFocus** — a representative that is not the most recently
   focused presentable member (the rec19 churn shape).
-- **testLeavingAGroupKeepsTheLentSpaceSoALiveWindowIsNotHidden** — QA T-05: the exact-set re-form ungroups
+- **testLeavingAGroupKeepsTheLentSpaceSoALiveWindowIsNotHidden** — seen live: the exact-set re-form ungroups
   the torn-out window; it keeps the Space the group lent it (marker still set) instead of being asserted
   Space-less, which had hidden a live window for 515ms.
 - **testHarnessSpacelessStrayIsHiddenAndHeldIsExempt** — a Space-less, ungrouped, unheld window must be
@@ -156,40 +156,35 @@ report a violation. These are tests OF the harness, not of the reducer.
   reconcile, or derived per-member facts (above all the fullscreen mirror) stay stale and the state is not a
   reconcile fixed point.
 
-### C. Order-in as a focus signal
+### C. Order-in, and what it is still allowed to mean
 
-- **testInAppRaiseWithoutFocusEventBumpsTheMru** — Cmd+` raises a background window of the already-frontmost
-  app with only an order-in (815), never an 808, so the order-in must bump the MRU.
-- **testOrderInDuringActivationDoesNotBump** — but NOT while an activation is in flight and its `raiseTail`
-  names this wid: the 808 storm already orders the app's windows, and re-fronting there reverses that order
-  (#5596). Written with `wids` already drained, since that is the state the 815s actually find.
-- **testInAppRaiseBumpsRightAfterAnAltTabInitiatedActivation** — an activation WE caused raised exactly one
-  window, so its tail is empty and a Cmd+` a beat later is a real focus. The plain 0.5s gate swallowed it and
-  the MRU kept the window the user had left, so the next alt-tab back landed on it again (#5875: the two
-  misses 442ms and 435ms in, the cycles that worked ~900ms+).
-- **testActivationRaiseBurstLeavesOnlyTheFocusedWindowAtTheFront** — the REPLAY of a recorded burst (Finder,
-  3 windows, macOS 26): activation, the three 808s, then the three 815s, all in one millisecond. Only the
-  focused window moves. The 815s arrive after the 808s have drained the activation snapshot, so a gate keyed
-  on "the snapshot still holds candidates" passes the hand-built test above and still inverts the app's
-  windows here — which is why this one replays the sequence instead of setting the state.
-- **testOrderInOfInactiveAppsWindowDoesNotBump** — and not for a background app re-ordering its own window,
-  the same "app must be active" guard the 808 path uses.
-- **testLeavingFullscreenDoesNotRefrontTheAppsOtherWindows** — nor for a window merely coming BACK on screen:
-  leaving fullscreen re-shows the whole desktop Space, and the app's untouched sibling used to jump the other
-  app's window (#5849 follow-up, recorded). `inSpaceTransition` cannot gate it — the Space notification lands
-  519ms after the order-ins — so the preceding order-out (816) is what separates a re-show from a raise.
-- **testAnInAppRaiseAfterAReshowStillBumps** — and that exemption is consumed on use, or one Space switch
-  would deafen Cmd+` for every window it re-showed.
-- **testSecondAltTabIntoTheSameAppIsNotMistakenForTheActivationsRaiseTail** — two alt-tabs 219ms apart into
-  one app: the second window's 808 is a real focus, not the first activation's raise tail, and nothing else
-  would ever have corrected it (#5785's stuck switcher).
-- **testReshownWindowLandsBehindWhatWasFocusedDuringItsDiscoveryGap** — the same signal for a wid we do NOT
-  track yet: an app that hides its window keeps the CGWindow, so reopening re-shows the same wid with no
-  create and no 808 (#5785). Held as a `FocusPromotion` and applied at the time it happened, so a window
-  discovered after the user alt-tabbed away lands BEHIND that window instead of at the back of the MRU.
-- **testReshownWindowOfAnAppThatWasNotFrontmostIsNotPromoted** — the pid gate on that promotion: an untracked
-  order-in is circumstantial, so it counts only for the app that was frontmost when the window appeared, and
+An 815 cannot move the window order any more (see `WindowEventReducerFocusSpecs`), so what is left here is
+the bookkeeping it still owns: an untracked wid it names, and the sequences a real capture recorded.
+
+- **testTwoAltTabsIntoTheSameAppBothMoveTheOrder** — two alt-tabs 219ms apart into one app. The second is a
+  switch inside the app that is already frontmost, so no activation follows it and AltTab naming its own
+  target is the only thing that says the user moved. Unheard, nothing ever corrects it (#5785's stuck
+  switcher).
+- **testLeavingFullscreenDoesNotRefrontTheAppsOtherWindows** — the recorded #5849 follow-up: leaving
+  fullscreen re-shows the whole desktop Space and every window on it is ordered in. A replay of the capture,
+  kept now that the inference that misread it is gone.
+- **testReshownWindowLandsBehindWhatWasFocusedDuringItsDiscoveryGap** — the one thing an untracked order-in
+  still does: an app that hides its window keeps the CGWindow, so reopening re-shows the same wid with no
+  create and no 808 (#5785). It is discovered rather than lost, and it claims no rank of its own — where it
+  lands is decided the next time its app speaks.
+- **testReshownWindowOfAnAppThatWasNotFrontmostIsNotPromoted** — the pid gate on the circumstantial
+  promotion: an untracked order-in counts only for the app that was frontmost when the window appeared, and
   the pid can only be checked once discovery names it.
+
+### C2. The group token, and what it retires
+
+- **testTabsJoinOneGroupByTokenWhenTitlesAndFramesNameNobody** — two tabs whose AX titles name nobody (#5785's
+  composed titles) and whose frames share no cluster (a tab bar resized one) still end up in ONE group,
+  because each named the same `AXTabGroup` element while it was the selected tab. The point of the fixture is
+  what it does NOT contain: no create, no pairing window, no clock — the second read lands whenever it lands
+  and the group is still exact. This is the signal `recentPairingWindow` reconstructs by arrival time; the
+  timer stays for what the token cannot see (a fullscreen group in Terminal / TextEdit exposes no element,
+  and a tab nobody has ever selected has no token), so the two are layered, not swapped.
 
 ### D. The handover edge (`recordHandover`)
 
@@ -208,6 +203,9 @@ order nothing pins, so both arrival orders are tested — the same thing `Handov
   never seen, so the edge waits in `pendingHandoverEdge` and is applied at discovery.
 - **testPendingHandoverIsDroppedWhenTheDiscoveredWidBelongsToAnotherApp** — the pid check moves to
   CONSUMPTION when one side was untracked, that being the first moment a pid exists.
+- **testMintedTabSwitchRefreshesTheIncomingFrameFromTheWindowServer** — the minted tab arrives wearing the
+  frame it had as a BACKGROUND tab, and no geometry event will ever correct it (we subscribe to that wid only
+  after its order-in). Forming the group asks the WindowServer, as the tracked half does on `joinedSpace`.
 - **testPendingHandoverIsDrainedWhenTheMintIsSuperseded** — a mint superseded before discovery never becomes
   a window, so the edge naming it dies with it.
 - **testPendingHandoverIsDrainedWhenTheMintIsRejectedByTheDiscriminator** — the other way a mint never
@@ -215,21 +213,52 @@ order nothing pins, so both arrival orders are tested — the same thing `Handov
   never fires, and a wid joining a non-visible Space is never even scheduled for discovery), so both pending
   maps drain there. Consumption is not time-bounded, so a leaked edge could later dress a window in a stale
   `replacedWid` that `dragOutVerdict` reads as settled.
+- **testMintedTabSwitchKeepsTheTabsTheTitlesAlreadyGrouped** — the handover claims a REPRESENTATIVE, not a
+  membership. When the AXTabGroup titles land in the same discovery and group the mint with every tab of the
+  window, re-forming from the inherited pair would evict the rest, since `formGroup` is exact-set. Live QA
+  C-10: one 4-tab Finder window drawn as two tiles.
 - **testHandoverIsClearedWhenTheReplacedWindowComesBack** — the edge describes the CURRENT state, so it
   expires when either end moves again.
 
 ### D. The z-order seed (`zOrderRead`, the very first summon)
 
-The blocking CGS stacking query AltTab fires on its first summon, applied through the MRU model instead of
-over it. It answers AFTER that summon's first render, so anything it decides, the user watches happen.
+The blocking CGS stacking query AltTab fires while it has no focus history, applied through the MRU model
+instead of over it. It is re-made as startup discovery lands (`Windows.reseedZOrderDuringStartup`) so the
+order settles before the user looks; the first summon still fires one last call, which should now find
+nothing to change. Anything it decides after a render, the user watches happen — which is why what it moved
+has to be reported accurately.
 
 - **testZOrderSeedsWindowsWithNoFocusHistory** — with no focus history at all, stacking IS the order: AltTab
   launched into a desktop it did not watch being built, and top-most first is the best guess it has.
 - **testZOrderNeverDemotesAWindowThatWasActuallyFocused** — a window the OS told us was focused keeps its
   place, because the seed is written into the `focusedAt` TIEBREAK rather than over it. Teeth-verified:
   assign the ranks directly, as `Windows.sortByLevel` used to, and this fails with the live symptom — the
-  T-21 capture where the just-focused Terminal tab, backgrounded and therefore absent from the query, fell
+  live capture where the just-focused Terminal tab, backgrounded and therefore absent from the query, fell
   from tile 0 to tile 3 twenty milliseconds in, taking the highlight with it.
+- **testZOrderReportsWhatItMovedOnAColdModel** — the seed writes its answer into `lastFocusOrder` and only
+  then asks `recomputeFocusRanks` what moved, so on a cold model (every `focusedAt` still 0, which is the
+  launch case it runs in) the re-derivation finds its own answer already in place and reports nothing. The
+  reducer then emits no log and no `.refreshUi` while the order really has changed, and an open switcher
+  keeps drawing the old list. Teeth-verified: it fails against the pre-fix `return recomputeFocusRanks()`.
+  Live evidence — the 2026-08-25 QA run moved the MRU front onto a Finder window with no
+  `zOrder seed reordered` line anywhere in its debug log, which is why three investigations dead-ended.
+- **testZOrderThatChangesNothingSaysNothing** — the other side: a seed that really changes nothing stays
+  silent, so a first summon does not repaint for nothing.
 - **testZOrderPutsWindowsItCannotSeeBehindTheStackedOnes** — the query lists the visible Spaces' windows, so
   a background tab, a minimized window and another Space's window are absent; they keep their relative order
   behind the ones it did see, since being off screen says nothing about which was touched last.
+
+## Switching to a tab we adopted but never grouped
+
+A tab switch emits no focus event, only the Space swap, so the Space-join of a background tab while its app
+is frontmost IS the focus signal. The gate for that used to require `isTabbed`, which asks whether we had
+managed to link the tab into a group — our own bookkeeping, not the user's reality.
+
+- **testSwitchingToAnAdoptedButUngroupedTabFrontsIt** — Finder's tabs share one title and keep a stale frame
+  while backgrounded, so the AX-title match names nothing and geometry sees two different positions: the tab
+  is adopted by the brute-force scan and then sits Space-less, ordered-out and in no group. Switching to it
+  wrote no focus at all, and the group formed a beat later (once the tab was on-screen and readable)
+  re-elected the tab the user had just LEFT as the one it draws. Teeth-verified: without the second arm the
+  MRU stays `[549, 544]` and `groupRepresentative` answers 549, which is the live symptom.
+- **testAnUngroupedTabJoiningASpaceOfAnInactiveAppDoesNotFront** — the control: the same join with the app in
+  the background is not a switch the user made, and fronts nothing.

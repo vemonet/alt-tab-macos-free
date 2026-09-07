@@ -73,6 +73,14 @@ final class TestScenarioSimulatorTests: XCTestCase {
                        .openTab(window: 0), .show])
     }
 
+    /// A fullscreen tab handover is valid in either notification order. When the outgoing representative
+    /// leaves first, its held group waits for the exact untracked wid that joins the same Space.
+    func testFullscreenNewTabInheritsItsGroupWhenLeaveArrivesFirst() {
+        assertCorrect([.newWindow(pid: 1), .openTab(window: 0), .openTab(window: 0),
+                       .enterFullscreen(window: 0), .switchTab(window: 0, tab: 1),
+                       .openTab(window: 0), .show], duplicateTitles: true)
+    }
+
     /// Two SEPARATE fullscreen windows of one app merged while the second entered fullscreen (transiently
     /// two-Spaced → fed the single-Space fullscreen fold). Fixed: the fold only folds Space-less members or
     /// members settled on the cluster's single settled Space (`TabGroupResolver.resolveGroup`).
@@ -249,12 +257,11 @@ final class TestScenarioSimulatorTests: XCTestCase {
     /// windowed read, so its count is 0 for every app. Nor is the tab bar simply unreachable: it is reachable
     /// by hit-testing the separate NSToolbarFullScreenWindow, and descending into AXGroup children is not the
     /// way in (it works for Finder and Script Editor, not Terminal or TextEdit, and that app-dependent
-    /// asymmetry lets a fullscreen active reach `matchSiblings`). See
-    /// `experimentations/TabbedWindowDetection.swift`.
+    /// asymmetry lets a fullscreen active reach `matchSiblings`).
     ///
     /// So this stays ACCEPTED. The gap is "not listed in separate-tabs mode until first visit", and it
-    /// self-heals on that visit. Closing it means implementing the hit-test chain, whose costs are written
-    /// down in `TabbedWindowDetection.swift`.
+    /// self-heals on that visit. Closing it means implementing the hit-test chain, which needs the window on
+    /// screen and costs one CGS call plus up to a dozen AX hit-tests per fullscreen window per read.
     /// The same window, fullscreened and NOT switched since, so its background tabs are still frozen at the
     /// pre-fullscreen windowed frame. Nothing groups them: AX reads no tab group for a fullscreen window (by
     /// design — see `AXUIElement.tabGroupInfo`) and the frames put them in a different size cluster.

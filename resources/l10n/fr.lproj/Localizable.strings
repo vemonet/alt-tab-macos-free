@@ -228,9 +228,9 @@
 "Show details (for support)" = "Afficher les détails (pour le support)";
 "Show fullscreen windows" = "Afficher les fenêtres en plein écran";
 "Show hidden windows" = "Afficher les fenêtres masquées";
-"Show main window" = "Afficher la fenêtre principale";
 "Show minimized windows" = "Afficher les fenêtres réduites";
 "Show on" = "Afficher sur";
+"Show one window per app" = "Afficher une fenêtre par app";
 "Show separate window for each tab" = "Afficher une fenêtre séparée pour chaque onglet";
 "Show single window for all tabs" = "Afficher une seule fenêtre pour tous les onglets";
 "Show titles" = "Afficher les titres";

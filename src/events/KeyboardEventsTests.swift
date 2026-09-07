@@ -96,7 +96,7 @@ final class KeyboardEventsUtilsTests: XCTestCase {
     // The first pair's release is lost, so its session is still open when the second pair's tab-down
     // arrives. That release must be honoured on the tile the user was looking at, BEFORE the tab-down
     // cycles: honoured after, the focus commits one tile too far, and the alt-tabs after it ping-pong
-    // against a window that was never picked (QA F-01).
+    // against a window that was never picked, seen live.
     func testLostHoldReleaseIsSettledBeforeTheNextSummonCycles() throws {
         resetState()
         ModifierFlags.current = [.option]

@@ -77,7 +77,9 @@ class Preferences {
     }()
 
     // system preferences
-    static var finderShowsQuitMenuItem: Bool { UserDefaults(suiteName: "com.apple.Finder")?.bool(forKey: "QuitMenuItem") ?? false }
+    static var finderShowsQuitMenuItem: Bool {
+        UserDefaults(suiteName: "com.apple.Finder")?.bool(forKey: "QuitMenuItem") ?? false
+    }
     static let staticShortcutKeys = [
         "focusWindowShortcut", "previousWindowShortcut", "cancelShortcut", "closeWindowShortcut",
         "minDeminWindowShortcut", "toggleFullscreenWindowShortcut", "quitAppShortcut", "hideShowAppShortcut", "searchShortcut",
@@ -110,7 +112,8 @@ class Preferences {
     static var cursorFollowFocus: CursorFollowFocus { CachedUserDefaults.macroPref("cursorFollowFocus", CursorFollowFocus.allCases) }
     static var trackpadHapticFeedbackEnabled: Bool { CachedUserDefaults.bool("trackpadHapticFeedbackEnabled") }
     static var hideColoredCircles: Bool { CachedUserDefaults.bool("hideColoredCircles") }
-    static var windowDisplayDelay: DispatchTimeInterval { DispatchTimeInterval.milliseconds(CachedUserDefaults.int("windowDisplayDelay")) }
+    static var windowDisplayDelayInMs: Int { CachedUserDefaults.int("windowDisplayDelay") }
+    static var windowDisplayDelay: DispatchTimeInterval { DispatchTimeInterval.milliseconds(windowDisplayDelayInMs) }
     static var fadeOutAnimation: Bool { CachedUserDefaults.bool("fadeOutAnimation") }
     static var previewFadeInAnimation: Bool { CachedUserDefaults.bool("previewFadeInAnimation") }
     static var hideSpaceNumberLabels: Bool { CachedUserDefaults.bool("hideSpaceNumberLabels") }
@@ -245,7 +248,7 @@ class Preferences {
         cachedAll = nil
     }
 
-    static func onlyShowMainWindows(_ index: Int = SwitcherSession.activeShortcutIndex) -> Bool {
+    static func showsOneWindowPerApp(_ index: Int = SwitcherSession.activeShortcutIndex) -> Bool {
         return groupApps(index) == .mainWindow
     }
 
@@ -438,6 +441,9 @@ class Preferences {
     }
 }
 
+/// **The cache is there because `UserDefaults` is IPC.** Every miss is a round trip to cfprefsd, and the
+/// switcher reads dozens of preferences per show, so what reaches `UserDefaults` from here is what this
+/// class failed to absorb.
 class CachedUserDefaults {
     static var cache = ConcurrentMap<String, Any>()
 

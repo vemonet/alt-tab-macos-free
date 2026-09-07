@@ -316,6 +316,12 @@ func SLSWindowIteratorAdvance(_ iterator: CFTypeRef) -> Bool
 @_silgen_name("SLSWindowIteratorGetWindowID")
 func SLSWindowIteratorGetWindowID(_ iterator: CFTypeRef) -> CGWindowID
 
+@_silgen_name("SLSWindowIteratorGetParentID")
+func SLSWindowIteratorGetParentID(_ iterator: CFTypeRef) -> CGWindowID
+
+@_silgen_name("SLSWindowIteratorGetAlpha")
+func SLSWindowIteratorGetAlpha(_ iterator: CFTypeRef) -> Float
+
 @_silgen_name("SLSWindowIteratorGetPID")
 func SLSWindowIteratorGetPID(_ iterator: CFTypeRef) -> pid_t
 

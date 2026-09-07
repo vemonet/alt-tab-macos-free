@@ -41,16 +41,48 @@ the visible signal stays above it as the correction rather than replacing it, an
 plainly: on a genuinely slow show the grace now starts at the order-front instead of at the paint, which
 can let ONE advance land early. That is the price of not being a second late on every ordinary summon.
 
+## The stall AFTER the show (#5977)
+
+The visibility anchor covers a stall BEFORE the panel is presented. A stall after it does the same damage,
+and the anchor cannot see it: `panelShownAt` is set as the panel is ordered front, while the expensive part
+of a summon (thumbnails for every window, the discovery and Space passes an idle app has to redo cold) runs
+after. Reported live as: the first alt-tab after 5-10 idle minutes opens with the selection ~8 tiles into the
+list instead of on the previous window, whatever the list length — a count set by elapsed time and the repeat
+rate, not by the window set.
+
+Two things made a backlog possible:
+
+- the timer fired on a **repeating** schedule, on its own background queue, so a busy main thread piled up one
+  queued block per missed interval;
+- the key-up that stops the timer is an **event source**, and the run loop drains the whole main dispatch
+  queue before it reads the next event. The backlog is therefore always applied BEFORE the release that
+  cancels it, and each block re-checked `now`, which by then satisfied the grace.
+
+Both are answered:
+
+- the timer is **one-shot and re-arms itself from the handler**, so at most one tick can be in flight and a
+  stall delays the next one instead of queueing more. The interval becomes handler-to-handler rather than
+  fire-to-fire, which drifts by the cost of one cycle (sub-millisecond against a 33-500ms `KeyRepeat`).
+- a tick that **reached the main thread late is refused**, since a tick that waited is not evidence that the
+  key is still down.
+
+This was masked until v11.4.4: with no anchor at all, every tick took the `initialDelay + 1s` fallback, which
+swallowed backlogs shorter than ~1.4s.
+
 ## The rule (tested)
 
-Inputs are `systemUptime` timestamps. The anchor is `panelBecameVisibleAt ?? panelShownAt`:
+Inputs are `systemUptime` timestamps. `firedAt` is when the timer fired, `now` when the main thread got to it.
 
-1. **an anchor is known** → apply iff `now - anchor >= initialDelay`. The WindowServer's visible
-   timestamp wins when present, being the true pixels-on-screen moment; the show timestamp is the
-   guaranteed stand-in.
-2. **neither known** → hold off, but fall back to arm-relative timing after
+1. **the tick is late** — `now - firedAt >= max(repeatRate, 20ms)` → refuse, whatever the anchors say.
+2. **an anchor is known** (`panelBecameVisibleAt ?? panelShownAt`) → apply iff `now - anchor >= initialDelay`.
+   The WindowServer's visible timestamp wins when present, being the true pixels-on-screen moment; the show
+   timestamp is the guaranteed stand-in.
+3. **neither known** → hold off, but fall back to arm-relative timing after
    `initialDelay + missedVisibleSignalBudget` (1s), so a missing anchor can never wedge hold-to-cycle
    permanently. A genuine safety net now, rather than the path every tick took.
+
+The late budget is floored at 20ms because `defaults write -g KeyRepeat 0` is legal, and a zero-length budget
+would refuse every tick.
 
 ---
 
@@ -76,3 +108,9 @@ Mirrors `KeyRepeatTimerTests.swift` 1:1.
   isn't up). Fallback only opens at `initialDelay + 1s`.
 - **testAppliesAfterFallbackBudgetWhenNeverVisible** — never visible, armed 1.5s ago, initialDelay 0.4s
   → applies (`>= 0.4 + 1`), so a missed visible signal doesn't wedge hold-to-cycle.
+
+### C. The tick reached the main thread late
+- **testSkipsATickThatWaitedLongerThanOneRepeatInterval** — #5977: fired 0.6s before it ran, refused.
+- **testAppliesATickThatReachedMainPromptly** — the ordinary microsecond hop still cycles.
+- **testTheLateBudgetIsOneRepeatInterval** — a slower `KeyRepeat` tolerates a proportionally longer wait.
+- **testAZeroRepeatRateStillAppliesPromptTicks** — the 20ms floor keeps `KeyRepeat 0` working.

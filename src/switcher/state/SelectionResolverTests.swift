@@ -519,4 +519,118 @@ final class SelectionResolverTests: XCTestCase {
         XCTAssertNil(SelectionResolver.findTarget(list, nil))
         XCTAssertNil(SelectionResolver.findTarget(list, "missing"))
     }
+
+    // MARK: - G. Answering `currentWindowIsDrawn` from the frontmost app's windows (#5960)
+
+    /// Concise builder for a window of the frontmost app. Defaults model the common case: a real, drawn,
+    /// on-screen window.
+    private func fw(visible: Bool = true, windowless: Bool = false,
+                    phantom: Bool = false, minimized: Bool = false) -> FrontmostAppWindow {
+        FrontmostAppWindow(visible: visible, isWindowlessApp: windowless,
+                           isPhantom: phantom, isMinimized: minimized)
+    }
+
+    /// G1. #5941, the case the flag exists for: the frontmost app owns a real on-screen window and a filter
+    /// keeps it out of the list, so the front tile is already the window before it.
+    func testCurrentWindowIsDrawnIsFalseWhenARealWindowIsFilteredOut() {
+        XCTAssertFalse(SelectionResolver.currentWindowIsDrawn([fw(visible: false)]))
+    }
+
+    /// G2. The control: the same window drawn.
+    func testCurrentWindowIsDrawnIsTrueWhenTheRealWindowIsDrawn() {
+        XCTAssertTrue(SelectionResolver.currentWindowIsDrawn([fw()]))
+    }
+
+    /// G3. One window drawn and one filtered out — the app still has a tile, so nothing says the window the
+    /// user is looking at is missing.
+    func testCurrentWindowIsDrawnIsTrueWhenOnlySomeWindowsAreFilteredOut() {
+        XCTAssertTrue(SelectionResolver.currentWindowIsDrawn([fw(visible: false), fw()]))
+    }
+
+    /// G4. #5960: the user closed the last window of the frontmost app, which stays running and frontmost
+    /// with nothing but a placeholder, and `Windowless apps: Hide` drops that too. No window of theirs is
+    /// being hidden — the window on top of the screen is the front tile — so the front tile is stepped over.
+    func testCurrentWindowIsDrawnIsTrueForAWindowlessFrontmostApp() {
+        XCTAssertTrue(SelectionResolver.currentWindowIsDrawn([fw(visible: false, windowless: true)]))
+    }
+
+    /// G5. The same app with the placeholder SHOWN: still nothing hidden, still the ordinary rule.
+    func testCurrentWindowIsDrawnIsTrueForADrawnWindowlessPlaceholder() {
+        XCTAssertTrue(SelectionResolver.currentWindowIsDrawn([fw(windowless: true)]))
+    }
+
+    /// G6. An app whose windows are all minimized under `Minimized windows: Hide`. A minimized window is not
+    /// one the user can be looking at, so it never makes the front tile "someone else's window".
+    func testCurrentWindowIsDrawnIsTrueWhenOnlyMinimizedWindowsAreHidden() {
+        XCTAssertTrue(SelectionResolver.currentWindowIsDrawn([fw(visible: false, minimized: true)]))
+    }
+
+    /// G7. A minimized window that IS drawn changes nothing either — the answer must not depend on the
+    /// minimized filter.
+    func testCurrentWindowIsDrawnIsTrueWhenTheOnlyWindowIsADrawnMinimizedOne() {
+        XCTAssertTrue(SelectionResolver.currentWindowIsDrawn([fw(minimized: true)]))
+    }
+
+    /// G8. A window we judged phantom is a window we say does not exist; it cannot be the one being hidden
+    /// from the user.
+    func testCurrentWindowIsDrawnIsTrueWhenTheOnlyWindowIsPhantom() {
+        XCTAssertTrue(SelectionResolver.currentWindowIsDrawn([fw(visible: false, phantom: true)]))
+    }
+
+    /// G9. A placeholder next to a real window that a filter dropped: the real one still answers.
+    func testCurrentWindowIsDrawnIsFalseWhenAPlaceholderAccompaniesAFilteredOutWindow() {
+        XCTAssertFalse(SelectionResolver.currentWindowIsDrawn([fw(windowless: true), fw(visible: false)]))
+    }
+
+    /// G10. The frontmost app has no entry in the list at all (nothing tracked for it yet).
+    func testCurrentWindowIsDrawnIsTrueWhenTheAppHasNoWindows() {
+        XCTAssertTrue(SelectionResolver.currentWindowIsDrawn([]))
+    }
+
+    func testExactAttentionAnswersForTheWindowRatherThanItsApplication() {
+        XCTAssertFalse(SelectionResolver.currentWindowIsDrawn(.exactWindow(isDrawn: false)))
+        XCTAssertTrue(SelectionResolver.currentWindowIsDrawn(.exactWindow(isDrawn: true)))
+    }
+
+    func testUnknownAttentionPreservesTheOrdinaryRule() {
+        XCTAssertTrue(SelectionResolver.currentWindowIsDrawn(.unknown))
+    }
+
+    /// G11. #5960 end to end, through both kernels: the reporter's own steps. Terminal frontmost over
+    /// Chrome/Google and Chrome/YouTube, close Terminal's last window, summon. Terminal contributes only a
+    /// placeholder, so the pick steps over the front tile as usual and lands on Chrome/YouTube. Answering
+    /// the first kernel `false` selected Chrome/Google — the window already on top of the screen — and the
+    /// shortcut looked like it did nothing.
+    func testInitialPickStepsOverTheFrontTileAfterTheFrontmostAppLostItsLastWindow() {
+        let terminal = [FrontmostAppWindow(visible: false, isWindowlessApp: true,
+                                           isPhantom: false, isMinimized: false)]
+        let i = inputs(list: [w("chromeGoogle"), w("chromeYouTube")],
+                       currentWindowIsDrawn: SelectionResolver.currentWindowIsDrawn(terminal))
+        XCTAssertEqual(SelectionResolver.decide(i), .resetThenSelect(1))
+    }
+    // MARK: re-anchoring the hover
+
+    /// A tile inserted before the hovered one moves its index. An index alone would still be in bounds and
+    /// would now point at the neighbour — the highlight would silently be on the wrong window.
+    func testHoverFollowsItsWindowWhenTheListGrowsBeforeIt() {
+        XCTAssertEqual(SelectionResolver.reanchorHover(target: "b", in: ["new", "a", "b", "c"]), 2)
+    }
+
+    func testHoverFollowsItsWindowWhenTheListShrinksBeforeIt() {
+        XCTAssertEqual(SelectionResolver.reanchorHover(target: "c", in: ["b", "c"]), 1)
+    }
+
+    /// Gone means gone. The highlight is not inherited by whoever took the slot.
+    func testHoverIsClearedWhenItsWindowLeaves() {
+        XCTAssertNil(SelectionResolver.reanchorHover(target: "b", in: ["a", "c"]))
+    }
+
+    func testNoHoverStaysNoHover() {
+        XCTAssertNil(SelectionResolver.reanchorHover(target: nil, in: ["a", "b"]))
+    }
+
+    func testHoverIsUnchangedWhenNothingMoved() {
+        XCTAssertEqual(SelectionResolver.reanchorHover(target: "b", in: ["a", "b", "c"]), 1)
+    }
+
 }

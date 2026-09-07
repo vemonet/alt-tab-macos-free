@@ -17,8 +17,14 @@ extension NSScreen {
     static var preferred = NSScreen.screens.first!
     private static var uuidCache = [ObjectIdentifier: ScreenUuid]()
 
+    /// During a display reconfiguration (unplug, sleep, resolution change) `NSScreen.screens` can be
+    /// empty for a moment, and the notification that tells us to recompute arrives in that window.
+    /// There is no valid NSScreen to fall back to then (`NSScreen()` crashes on access), so we keep
+    /// the last known screen until the display list comes back.
     static func updatePreferred() {
-        preferred = detectPreferred() ?? NSScreen.screens.first!
+        if let screen = detectPreferred() ?? NSScreen.screens.first {
+            preferred = screen
+        }
     }
 
     private static func detectPreferred() -> NSScreen? {
@@ -36,22 +42,22 @@ extension NSScreen {
     ///   * if NSScreen.screensHaveSeparateSpaces == false, and key window is on another screen than screens[0], it still returns screens[0]
     /// we find the screen with the key window ourselves manually
     static func active() -> NSScreen? {
-        guard let frontmostPid = Applications.frontmostPid,
-              // we avoid Applications.findOrCreate() here, because it active() is called very early during launch
-              // we are not ready to create applications yet
-              let frontmostApp = (Applications.list.first { $0.pid == frontmostPid }) else { return nil }
-        guard let focusedWindow = frontmostApp.focusedWindow else { return NSScreen.withActiveMenubar() }
+        guard case .window(let identity) = AttentionEngine.currentUserContext,
+              let focusedWindow = Windows.byWindowId[identity.wid] else { return NSScreen.withActiveMenubar() }
         // Read the focused window's cached screen rather than refreshing it here: this runs on the show
         // path (NSScreen.updatePreferred), and updateSpacesAndScreen() does a synchronous CGS call (#5721).
         // The screen is kept fresh off-main on focus events and by Applications.syncSpacesState; the only
         // cost is a possibly-wrong active screen on the very first summon of a never-yet-resolved window.
-        guard let screenId = focusedWindow.screenId else { return nil }
-        return Screens.all[screenId]
+        guard let screenId = focusedWindow.screenId else { return NSScreen.withActiveMenubar() }
+        return Screens.all[screenId] ?? NSScreen.withActiveMenubar()
     }
 
-    /// there is only 1 active menubar. Other screens will show their menubar dimmed
+    /// there is only 1 active menubar. Other screens will show their menubar dimmed.
+    /// The identifier is hoisted out of the predicate: it does not vary per screen, and inside `first { }` it
+    /// was a synchronous WindowServer round trip PER SCREEN, on the main thread, on the show path.
     static func withActiveMenubar() -> NSScreen? {
-        return NSScreen.screens.first { CGSCopyActiveMenuBarDisplayIdentifier(CGS_CONNECTION) == $0.cachedUuid() }
+        let activeMenubarUuid = CGSCopyActiveMenuBarDisplayIdentifier(CGS_CONNECTION)
+        return NSScreen.screens.first { activeMenubarUuid == $0.cachedUuid() }
     }
 
     static func withMouse() -> NSScreen? {

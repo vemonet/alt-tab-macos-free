@@ -357,10 +357,6 @@ enum ProTransitionState {
     static func markFreshInstallIfUnknown(_ value: Bool) {}
 }
 
-enum AxError: Error {
-    case runtimeError
-}
-
 // Preferences codec surface used by the migrations
 
 extension Preferences {

@@ -228,9 +228,9 @@
 "Show details (for support)" = "Показать сведения (для поддержки)";
 "Show fullscreen windows" = "Показывать полноэкранные окна";
 "Show hidden windows" = "Показывать скрытые окна";
-"Show main window" = "Показать главное окно";
 "Show minimized windows" = "Показывать свёрнутые окна";
 "Show on" = "Показывать на";
+"Show one window per app" = "Показать одно окно на приложение";
 "Show separate window for each tab" = "Отдельное окно для каждой вкладки";
 "Show single window for all tabs" = "Одно окно для всех вкладок";
 "Show titles" = "Показывать заголовки";

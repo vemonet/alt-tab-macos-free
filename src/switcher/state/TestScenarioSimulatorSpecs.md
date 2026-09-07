@@ -162,22 +162,6 @@ three actions). The same investigation also found the model was omitting the Spa
 emits — real logs show create → JOIN(new tab) → LEAVE(old tab) — and that join is the half of the handover
 that names the successor, so without it no scenario could exercise the handover pairing at all.
 
-### A third missing fact: the REJECTED first discovery (#5785 again, 2026-08-02)
-
-The user re-tested the build with those two axes fixed and still saw two tiles for one Terminal window, so
-the model was still incomplete. What it left out is that **every created wid is discovered TWICE**: the OS
-publishes a window at 0×0 and sizes it a beat later, so the discovery the create event schedules is rejected
-on the min-size filter, and the same wid is re-discovered from its first move/resize and accepted then. The
-capture has both landings for every wid (`windowCreated #4131` 41.577 → `rejected … size is 0x0` 41.616 →
-`accepted … (1017.0, 610.0)` 41.827).
-
-That first landing is not inert: it runs the same reducer branch and used to CONSUME the wid's pending state,
-the handover edge above all — which the 1325/1326 pair had recorded 8ms earlier. So the accepted landing
-inherited nothing and the new tab formed no group, leaving geometry and titles to fill in, and (by the two
-axes above) neither can. `TestInteractionModel.rejectedZeroSizedLanding` now emits it, in the same read unit
-as the accepted landing and ahead of it. It is teeth-verified: reverting the fix fails the #5785 test, generator
-seed 1, and `testSupersededMintedTabDoesNotStrandALiveBackgroundTabInAnOrphanGroup`.
-
 ## Bugs the model found + we fixed (pinned as `TestScenario`s, fuzzed over all orderings)
 
 1. **Superseded-incoming-tab promotion** (`newWindow → openTab → switchTab → openTab → show`): switching to
@@ -194,7 +178,7 @@ seed 1, and `testSupersededMintedTabDoesNotStrandALiveBackgroundTabInAnOrphanGro
 
 ## Fullscreen tab reading: investigated, and deliberately NOT used
 
-A long probe (see `experimentations/TabbedWindowDetection.swift`) established that a fullscreen window's tab
+A long probe established that a fullscreen window's tab
 bar IS reachable — unevenly. Finder and Script Editor list the containing AXGroup as a child of the window;
 Terminal and TextEdit do not, and theirs lives in a separate `NSToolbarFullScreenWindow` that no downward
 walk reaches (only a coordinate hit-test, via `SLSCopyAssociatedWindows` for the exact bounds).
@@ -426,8 +410,8 @@ responsible for and pointed the fix at the wrong rule. `shrink` now rejects any 
   The fix this file used to propose is DEAD, and worth recording so nobody spends a day on it: "the AXTabGroup
   COUNT is readable for a fullscreen window even when the titles are not" is false. `tabCount` is written only
   from `tabGroupInfo`, which reads DIRECT children, and a cold-start fullscreen window has never had a
-  windowed read, so its count is 0 for every app. That premise was the same lore
-  `experimentations/TabbedWindowDetection.swift` later corrected: a fullscreen tab bar IS reachable, but only
+  windowed read, so its count is 0 for every app. That premise was the same lore the fullscreen probe later
+  corrected: a fullscreen tab bar IS reachable, but only
   by hit-testing the separate `NSToolbarFullScreenWindow` that hosts it, and the cheap alternative (descend
   one level into AXGroup children) was tried and reverted — it works for Finder and Script Editor, not for
   Terminal or TextEdit, and that app-dependent asymmetry lets a fullscreen active reach `matchSiblings`,

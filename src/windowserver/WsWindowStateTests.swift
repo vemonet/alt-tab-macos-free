@@ -45,6 +45,14 @@ final class WsWindowStateTests: XCTestCase {
         }
     }
 
+    func testParentDefaultsToIndependentRoot() {
+        XCTAssertEqual(raw().parentWid, 0)
+    }
+
+    func testAlphaDefaultsToOpaque() {
+        XCTAssertEqual(raw().alpha, 1)
+    }
+
     // MARK: - D. Minimized (the observed `tags` values — see WsWindowStateSpecs.md for the full matrix)
 
     func testMinimizedWhenTagBitSet() {

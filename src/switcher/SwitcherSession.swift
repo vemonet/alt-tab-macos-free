@@ -36,8 +36,14 @@ final class SwitcherSession {
     var selectedIndex: Int = 0
     var hoveredIndex: Int?
     var selectedTarget: String?
-    /// True once the USER moved the selection themselves (cycled with the shortcut/arrows, or hovered), as
-    /// opposed to it sitting on the default pick. It decides whether `selectedTarget` is a commitment to
+    /// The window `hoveredIndex` MEANS, so the highlight can be re-anchored when the list changes under it.
+    /// An index alone survives a structural change as a valid number pointing at a different window: insert
+    /// or remove a tile before the hovered one and the hover silently moves to its neighbour, which the
+    /// bounds check cannot catch because the index is still in range.
+    var hoveredTarget: String?
+    /// True once the USER moved the selection themselves (cycled with the shortcut/arrows, or hovered) or
+    /// acted on it (`ShortcutActions`), as opposed to it sitting on the default pick untouched. It decides
+    /// whether `selectedTarget` is a commitment to
     /// follow or just where the default landed: a user's pick must stay on ITS window however the list
     /// reorders (#5665), while the default must keep tracking the model — the window set is still settling
     /// when the switcher opens, and locking the default onto whatever occupied the slot mid-churn made the
@@ -58,6 +64,8 @@ final class SwitcherSession {
     /// summon (see `Windows.selectionInputs`). Newcomers only push the default pick along while the list is
     /// longer than this — one that merely took the tile of a window that left it moved nothing.
     var visibleWindowCountAtSummon: Int?
+    /// Keeps one-per-app tiles from changing identity while discovery, grouping and search settle.
+    var representativeByPid = [pid_t: String]()
     var searchQuery: String = ""
 
     /// Full-resolution frames for the Preview panel, fetched just-in-time for the selected window and

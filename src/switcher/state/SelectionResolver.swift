@@ -46,21 +46,25 @@ struct SelectionInputs: Equatable {
     /// app), and then the front tile IS the window you were on before and stepping over it lands one tile too
     /// far (#5941).
     ///
-    /// The shell answers it as "some drawn tile belongs to the frontmost app", NOT "the frontmost app's
-    /// focused window is drawn". The weaker question is the one that fails safe: a stale or nil AX
-    /// `focusedWindow` answers the strict question `false` while the user's window sits right there at tile
-    /// 0, and the default would then select the window they are already on — a worse bug than the one being
-    /// fixed. Only when NO tile belongs to the frontmost app is the user's window certainly not among them.
-    ///
-    /// So the answer is exact for the filters that exclude a whole APP, and coarser than the truth for the
-    /// two that can exclude the current window while a SIBLING window of the same app stays drawn (`Spaces
-    /// to show: other Spaces`, `Screens to show: screen showing AltTab`). Those keep the old overshoot,
-    /// unchanged. Closing that too needs per-window identity, and the cheap version of it — the frontmost
-    /// app's lowest-`lastFocusOrder` window — lands on the current window itself in the grouped-tab case
-    /// `secondVisibleIndex` documents, where a hidden tab holds rank 0 and the current window sits behind it.
+    /// Answered exactly when attention names a window. App-only and unknown attention retain the conservative
+    /// app-wide rule: guessing `false` while the user's window is drawn selects the window they are already on.
     ///
     /// Defaults to `true`: the ordinary case, and what every scenario written before #5941 assumes.
     var currentWindowIsDrawn = true
+}
+
+/// One window of the frontmost app, seen the way "is the window the user is looking at drawn?" needs it.
+struct FrontmostAppWindow: Equatable {
+    let visible: Bool
+    let isWindowlessApp: Bool
+    let isPhantom: Bool
+    let isMinimized: Bool
+}
+
+enum CurrentWindowDrawEvidence: Equatable {
+    case exactWindow(isDrawn: Bool)
+    case application([FrontmostAppWindow])
+    case unknown
 }
 
 /// What the kernel recommends. Wrapper translates this into side effects (highlight redraws,
@@ -209,6 +213,36 @@ enum SelectionResolver {
         return bestIndex
     }
 
+    /// Answers `SelectionInputs.currentWindowIsDrawn` from the frontmost app's own windows.
+    ///
+    /// The question is not "does this app have a drawn tile" but "is a window that could be the one the user
+    /// is looking at being kept out of the list". Only a filter can do that, and only to a window that
+    /// exists: an app with no such window is not having anything hidden from the user, so the ordinary rule
+    /// applies and the front tile is stepped over as the window they are on.
+    ///
+    /// That distinction is the whole of #5960. Closing the last window of the frontmost app leaves it running
+    /// and still frontmost with nothing but a windowless placeholder — which `Windowless apps: Hide` then
+    /// drops — so no tile belonged to it and the pick stopped stepping over the front tile. The window on top
+    /// of the screen was the front tile, and alt-tab handed the user the window they were already looking at.
+    /// Same shape for an app left with only minimized windows under `Minimized windows: Hide`.
+    ///
+    /// So a placeholder, a phantom and a minimized window are all skipped: none of them is a window the user
+    /// can be looking at. Everything else the app owns counts, drawn or not — which keeps #5941 exact for the
+    /// filters that drop a whole app, and as coarse as it always was for the Spaces / Screens ones.
+    static func currentWindowIsDrawn(_ frontmostAppWindows: [FrontmostAppWindow]) -> Bool {
+        let candidates = frontmostAppWindows.filter { !$0.isWindowlessApp && !$0.isPhantom && !$0.isMinimized }
+        guard !candidates.isEmpty else { return true }
+        return candidates.contains { $0.visible }
+    }
+
+    static func currentWindowIsDrawn(_ evidence: CurrentWindowDrawEvidence) -> Bool {
+        switch evidence {
+        case .exactWindow(let isDrawn): return isDrawn
+        case .application(let windows): return currentWindowIsDrawn(windows)
+        case .unknown: return true
+        }
+    }
+
     /// Find the user's chosen window by id, returning its current index if visible.
     /// Mirrors the lookup in the old `Windows.restoreSelectionTargetIfVisible`.
     static func findTarget(_ list: [SelectionWindow], _ targetId: String?) -> Int? {
@@ -238,4 +272,17 @@ enum SelectionResolver {
         // backfill — the wrapper treats a no-change as a no-op.
         return .ensureTargetSet(i.selectedIndex)
     }
+    /// **Where the hover highlight belongs after the list changed under it.**
+    ///
+    /// `hoveredIndex` is a position, and a structural change keeps it a valid position while making it point
+    /// at a different window: insert or remove a tile before the hovered one and the highlight silently slides
+    /// to a neighbour. A bounds check cannot see that, because nothing is out of bounds.
+    ///
+    /// So the hover is re-derived from the window it MEANT. Gone means gone: a window that left the list takes
+    /// its highlight with it rather than handing it to whoever inherited the slot.
+    static func reanchorHover(target: String?, in ids: [String]) -> Int? {
+        guard let target else { return nil }
+        return ids.firstIndex(of: target)
+    }
+
 }

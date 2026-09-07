@@ -14,8 +14,8 @@ class DebugWindow: NSPanel {
     private var isPerformingAutoScroll = false
     private var entries = [(LogLevel, String)]()
     private var isListening = false
-    private var windowDiscriminatorCheckbox: NSButton!
-    private var filterWindowDiscriminator = false
+    private var windowAdmissionCheckbox: NSButton!
+    private var filterWindowAdmission = false
     private var inspectButton: NSButton!
     private var inspectColumns: NSStackView!
     private var inspectAppField: NSTextField!
@@ -93,10 +93,10 @@ class DebugWindow: NSPanel {
             filterControl.setImage(Self.colorDot(Self.colorForLevel(Self.levels[i])), forSegment: i)
             filterControl.setImageScaling(.scaleProportionallyDown, forSegment: i)
         }
-        windowDiscriminatorCheckbox = NSButton(checkboxWithTitle: "Accepted/Rejected windows", target: nil, action: nil)
-        windowDiscriminatorCheckbox.translatesAutoresizingMaskIntoConstraints = false
-        windowDiscriminatorCheckbox.onAction = { [weak self] _ in self?.windowDiscriminatorFilterChanged() }
-        let filterRow = NSStackView(views: [filterLabel, filterControl, windowDiscriminatorCheckbox])
+        windowAdmissionCheckbox = NSButton(checkboxWithTitle: "Accepted/Rejected windows", target: nil, action: nil)
+        windowAdmissionCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        windowAdmissionCheckbox.onAction = { [weak self] _ in self?.windowAdmissionFilterChanged() }
+        let filterRow = NSStackView(views: [filterLabel, filterControl, windowAdmissionCheckbox])
         filterRow.translatesAutoresizingMaskIntoConstraints = false
         filterRow.orientation = .horizontal
         filterRow.spacing = 8
@@ -213,14 +213,14 @@ class DebugWindow: NSPanel {
         rebuildText()
     }
 
-    private func windowDiscriminatorFilterChanged() {
-        filterWindowDiscriminator = windowDiscriminatorCheckbox.state == .on
+    private func windowAdmissionFilterChanged() {
+        filterWindowAdmission = windowAdmissionCheckbox.state == .on
         rebuildText()
     }
 
     private func shouldShowEntry(_ level: LogLevel, _ message: String) -> Bool {
         level.rawValue >= selectedMinLevel.rawValue &&
-            (!filterWindowDiscriminator || message.contains("WindowDiscriminator.swift"))
+            (!filterWindowAdmission || message.contains("surface accepted") || message.contains("surface not admitted"))
     }
 
     private func attributedLine(_ text: String, _ level: LogLevel) -> NSAttributedString {
@@ -316,8 +316,8 @@ class DebugWindow: NSPanel {
         selectedMinLevel = .debug
         filterControl.selectedSegment = 0
         isAutoScrolling = true
-        filterWindowDiscriminator = false
-        windowDiscriminatorCheckbox.state = .off
+        filterWindowAdmission = false
+        windowAdmissionCheckbox.state = .off
         hideAppIfLastWindowIsClosed()
         super.close()
     }

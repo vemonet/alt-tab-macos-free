@@ -1,5 +1,25 @@
 import Foundation
 
+struct FullscreenWindowEvidence: Equatable {
+    let pid: Int32
+    let wid: UInt32
+    let isFullscreen: Bool
+    let isOnCurrentSpace: Bool
+}
+
+enum ShortcutExceptionContextResolver {
+    static func isFullscreen(_ context: CurrentUserContext, appPid: Int32,
+                             activeWindowIsFullscreen: Bool,
+                             windows: [FullscreenWindowEvidence]) -> Bool {
+        if case .window(let identity) = context, identity.process.pid == appPid,
+           let window = windows.first(where: { $0.pid == appPid && $0.wid == identity.wid }) {
+            return window.isFullscreen
+        }
+        return activeWindowIsFullscreen
+            || windows.contains { $0.pid == appPid && $0.isFullscreen && $0.isOnCurrentSpace }
+    }
+}
+
 /// Matches windows/apps against the user's exception rules. Two independent, pure questions:
 ///   • `hidesWindow` — should this window be hidden from the switcher? (the exception's `hide` rule)
 ///   • `disablesShortcuts` — should AltTab's global shortcuts be turned off while this app is

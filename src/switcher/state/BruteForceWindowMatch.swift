@@ -1,21 +1,21 @@
 import Cocoa
 
-/// Pure decision kernel for `AXUIElement.windowByBruteForce`: given ONE remote AX element found during the
-/// brute-force scan, is it the ROOT window element for the target wid — or merely one of that window's
+/// Pure decision kernel for `AXUIElement.windowsByBruteForce`: given one remote AX element found during the
+/// brute-force scan, is it the ROOT window element for its requested wid — or merely one of that window's
 /// descendants that happens to resolve to the same wid?
 ///
 /// `_AXUIElementGetWindow` returns the CONTAINING window's id for a window's descendants too, so every
 /// button, outline, tab bar, and menu of the target window also matches its wid. Those descendants often sit
 /// at a LOWER AXUIElementID than the window element itself, so a scan that stopped at the first wid match
-/// handed the discriminator a descendant (role `AXOutline` / `AXGroup` / `AXTabGroup` / `AXMenuButton`,
+/// handed admission a descendant (role `AXOutline` / `AXGroup` / `AXTabGroup` / `AXMenuButton`,
 /// subrole nil), which was rightly rejected — and the window vanished from the switcher entirely (#5849, the
 /// v11.4 WindowServer-migration regression: the old fallback filtered by subrole, the migration dropped it).
 ///
 /// The fix is a root check: the target's root window element is the one whose role is `AXWindow`. Subrole is
-/// judged downstream by `WindowDiscriminator` (a real window can be `AXStandardWindow` or `AXDialog`), so we
+/// judged downstream by `WindowAdmissionResolver` (a real window can be `AXStandardWindow` or `AXDialog`), so we
 /// gate on ROLE here, not subrole — filtering by standard subrole alone would drop apps with nonstandard
-/// trees. `windowByBruteForce` is the thin impure adapter: it keeps the cheap wid gate first (so the role
-/// read costs IPC only on the target's own descendants) and routes the final verdict through this kernel.
+/// trees. `windowsByBruteForce` is the thin impure adapter: it keeps the cheap requested-wid gate first (so
+/// the role read costs IPC only on target windows' descendants) and routes each verdict through this kernel.
 enum BruteForceWindowMatch {
     /// True iff `candidate` is the target's root window element: it owns the target wid AND its role is
     /// `AXWindow`. A descendant sharing the wid (any non-`AXWindow` role) returns false, so the scan keeps
@@ -30,14 +30,14 @@ enum BruteForceWindowMatch {
     /// of window B, and when the user later switched to that tab it became the REPRESENTATIVE of A's group, so
     /// every real member of A stopped being drawn and A vanished from the switcher entirely.
     ///
-    /// `WindowDiscriminator`'s on-screen gate does not reach this: an inactive tab of another window is not on
+    /// `WindowAdmissionResolver`'s physical acquisition gate does not reach this: an inactive tab of another window is not on
     /// screen either, so it looks exactly like one of ours.
     ///
     /// The separating fact is where the candidate SITS. A tab is positioned by its parent window, so a
     /// candidate parked exactly on another of this app's tracked windows is that window's tab, not the
     /// requester's. Deliberately one-sided rather than "it must match the requester": Merge All Windows never
     /// converges the absorbed windows' frames — they keep their own cascade positions, frozen — so demanding a
-    /// match would make a merged group's tabs permanently un-adoptable (T-03/T-04). Those frozen frames sit on
+    /// match would make a merged group's tabs permanently un-adoptable. Those frozen frames sit on
     /// top of nothing, so this rule waves them through.
     ///
     /// Position only, not size: a tabbed window's members diverge in size as the tab bar resizes them, which is

@@ -33,7 +33,7 @@ final class WsEventRoutingTests: XCTestCase {
         XCTAssertEqual(WsEventRouting.action(for: .windowDestroyed), .remove)
         XCTAssertEqual(WsEventRouting.action(for: .windowMoved), .updateGeometry)
         XCTAssertEqual(WsEventRouting.action(for: .windowResized), .updateGeometry)
-        XCTAssertEqual(WsEventRouting.action(for: .windowFocused), .bumpFocusOrder)
+        XCTAssertEqual(WsEventRouting.action(for: .windowFocused), .noteFocusEvent)
         XCTAssertEqual(WsEventRouting.action(for: .windowOrderedIn), .refreshVisibility)
         XCTAssertEqual(WsEventRouting.action(for: .windowOrderedOut), .refreshVisibility)
         XCTAssertEqual(WsEventRouting.action(for: .windowAddedToSpace), .updateSpaceMembership)

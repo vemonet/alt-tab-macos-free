@@ -228,9 +228,9 @@
 "Show details (for support)" = "Visa detaljer (för support)";
 "Show fullscreen windows" = "Visa fönster i helskärm";
 "Show hidden windows" = "Visa dolda fönster";
-"Show main window" = "Visa huvudfönster";
 "Show minimized windows" = "Visa minimerade fönster";
 "Show on" = "Visa på";
+"Show one window per app" = "Visa ett fönster per app";
 "Show separate window for each tab" = "Visa separat fönster för varje flik";
 "Show single window for all tabs" = "Visa ett enda fönster för alla flikar";
 "Show titles" = "Visa titlar";
