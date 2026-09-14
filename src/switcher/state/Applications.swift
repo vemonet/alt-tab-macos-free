@@ -613,6 +613,13 @@ class Applications {
     /// AXUIElementIDs it can time out on a window that IS there and hand back the same false "closed" this
     /// guard exists to prevent.
     private static func confirmAbsentFromApp(wid: CGWindowID, pid: pid_t, reason: String) throws {
+        // A locked screen makes every app publish zero windows, so `.absent` here says "the screen is
+        // locked", not "the window is gone" (measured on macOS 26: locking condemned every tracked window
+        // 0.7s later, and they stayed gone until the next WindowServer rescan — #6021, which reads as the
+        // switcher listing only the frontmost window after a wake). Nothing can be learned in the dark, so
+        // throw and let the scheduler re-ask once the screen is back. Only this app-side route is void; the
+        // WindowServer half of `reconcileAxElementEnd` keeps answering while locked.
+        guard !ScreenLockEvents.isScreenLocked else { throw AxError.appUnresponsive }
         let outcome = WindowElementAcquisition.outcome(for: wid, pid: pid, route: .currentSpaceViaApplicationWindows)
         // Log all three verdicts: a capture where a window vanished needs to show whether this probe ran
         // at all and what it answered.
@@ -919,7 +926,7 @@ class Applications {
     /// deliver — title (no WS title-change event), the main-window flag, and tab siblings. Minimized is NOT
     /// among them any more: it is `WsWindowState.minimizedTag`, read from the WS query instead.
     /// Shares the "wid-N-generic" dedup/throttle key so it never double-reads a window the discovery pass
-    /// just refreshed. Runs for every tracked window on each show.
+    /// just refreshed.
     static func refreshWindowTitleAndTabs(_ axWindow: AXUIElement, _ wid: CGWindowID, _ app: Application, _ reconcileTabs: Bool = true) {
         // Snapshotted HERE, on main, at issue time. Recording the version the answer lands against instead
         // would mark a window up to date with a window set that changed while its read was in flight.
@@ -928,10 +935,12 @@ class Applications {
         // a live `AXTitleChanged` subscription has already pushed it (`applyObservedTitle`). So this is the
         // whole call skipped, not a shortened one: order-in and order-out fire on every minimize, every
         // Space move and every raise, which made them the most frequent AX calls the app issued.
-        // The per-show pass (`reviewExistingWindows`, `reconcileTabs: true`) deliberately still reads the
-        // title: it is the backstop for a notification that never arrived, and it is paying for the
-        // kAXChildren round trip anyway. Nothing waits on the `.titleAndTabsRead` this skips — it would
-        // reconcile no tabs and report no change.
+        // Nothing waits on the `.titleAndTabsRead` this skips — it would reconcile no tabs and report no
+        // change. The per-show pass takes this same skip, so for an app that pushes titles the title
+        // backstop is `TabReadPolicy`'s rolling cursor: the windows it elects for a tab read get their title
+        // re-read too, and the rest ride on the push. Narrow on purpose — the gaps a push leaves are an
+        // observer rebuild and an element adopted after the fact, both rare, both corrected within a few
+        // summons, against a read that would otherwise cost one round trip per window per summon.
         guard reconcileTabs || !AxObserverRegistry.deliversTitles(app.pid) else { return }
         AXCallScheduler.shared.schedule(key: "wid-\(wid)-generic", context: app.debugId, pid: app.pid, scan: true) { [weak app] in
             guard let app else { return }
@@ -1042,10 +1051,10 @@ class Applications {
     /// incomplete: title, the main-window flag, and tab siblings. Geometry/fullscreen/minimized are
     /// WindowServer-maintained (806/807 + the tags), so those are NOT re-read or overwritten here.
     ///
-    /// The TAB half is no longer asked of every window every time — `TabReadPolicy` picks the few that owe an
-    /// answer. The title half still runs for every window, and is itself skipped inside
-    /// `refreshWindowTitleAndTabs` for any app whose observer pushes titles, so a window this pass skips
-    /// costs one round trip or none.
+    /// The TAB half is not asked of every window every time — `TabReadPolicy` picks the few that owe an
+    /// answer. The TITLE half rides along inside `refreshWindowTitleAndTabs`: every window of an app that
+    /// does not push titles, and for an app that does, only the windows the policy elected. So a window this
+    /// pass visits costs one round trip or none.
     static func reviewExistingWindows() {
         var reviewable = [(Window, CGWindowID, AXUIElement)]()
         for window in Windows.list {
