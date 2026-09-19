@@ -63,12 +63,11 @@ class SheetWindow: NSWindow {
         doneButton.keyEquivalent = "\r"
         doneButton.translatesAutoresizingMaskIntoConstraints = false
         doneButton.widthAnchor.constraint(equalToConstant: 70).isActive = true
-        if #available(macOS 10.14, *) {
-            doneButton.bezelColor = NSColor.controlAccentColor
-        }
+        doneButton.bezelColor = NSColor.controlAccentColor
     }
 
     // allow to close with the escape key
+    // periphery:ignore:parameters sender - responder-chain signature (Esc closes the sheet)
     @objc func cancel(_ sender: Any?) {
         sheetParent!.endSheet(self)
     }

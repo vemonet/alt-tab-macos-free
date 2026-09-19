@@ -48,10 +48,7 @@ class Application: NSObject {
             return 84
         }
         // Big Sur redesigned app icons. A big change from square icons to rounded icons, and reducing their size; we trim that padding
-        if #available(macOS 11.0, *) {
-            return 24
-        }
-        return 0
+        return 24
     }()
 
     /// Converting NSImage to CGImage may seem simple, but it's actually very tricky. Lots of time has been put to make it work robustly
@@ -72,8 +69,7 @@ class Application: NSObject {
         let sourceWidth = finalWidth + padding * 2
         // we ask the NSImage for the closest image it has to our desired size. It's likely to return a 1024x1024 or 512x512 image; whichever is closest
         var proposedRect = CGRect(origin: .zero, size: NSSize(width: sourceWidth, height: sourceWidth))
-        // this convoluted style avoids a crash on macOS 10.13 (see #5255)
-        let hints : [NSImageRep.HintKey : NSNumber] = [.interpolation : NSNumber(value: NSImageInterpolation.high.rawValue)]
+        let hints: [NSImageRep.HintKey: NSNumber] = [.interpolation: NSNumber(value: NSImageInterpolation.high.rawValue)]
         guard let cgImage = icon.cgImage(forProposedRect: &proposedRect, context: nil, hints: hints) else { return nil }
         // we have to crop this image; let's scale our intended padding, given the image size we got
         let paddingScaled = padding * (CGFloat(cgImage.width) / sourceWidth)
@@ -111,17 +107,34 @@ class Application: NSObject {
         AxObserverRegistry.shared.processStarted(state.pid)
         ensureAxUiElement()
         kvObservers = [
-            runningApplication.observe(\.activationPolicy, options: [.new]) { [weak self] app, _ in
+            observeMirror(\.activationPolicy) { [weak self] app, _ in
                 guard let self else { return }
                 self.activationPolicy = app.activationPolicy
                 if self.canShowWindowlessPlaceholder() { _ = self.addWindowlessWindowIfNeeded() }
                 else { self.removeWindowlessAppWindow() }
                 self.ensureAxUiElement()
             },
-            runningApplication.observe(\.isTerminated, options: [.new]) { [weak self] app, _ in
+            observeMirror(\.isTerminated) { [weak self] app, _ in
                 self?.isTerminated = app.isTerminated
             },
-        ]
+        ].compactMap { $0 }
+    }
+
+    /// Observing an `NSRunningApplication` property makes AppKit subscribe to a LaunchServices notification
+    /// callback, and when that subscription fails AppKit raises NSInternalInconsistencyException
+    /// ("Failed to register for runningApplicationNotificationCallback") instead of returning, which
+    /// terminated AltTab from `init`. Losing an observer only costs the mirror's freshness: the value
+    /// seeded above stands, and `RunningApplicationsEvents` still sees launches and quits.
+    private func observeMirror<Value>(_ keyPath: KeyPath<NSRunningApplication, Value>,
+                                      _ handler: @escaping (NSRunningApplication, NSKeyValueObservedChange<Value>) -> Void) -> NSKeyValueObservation? {
+        var observation: NSKeyValueObservation?
+        guard ObjCExceptionCatcher.attempt({
+            observation = self.runningApplication.observe(keyPath, options: [.new], changeHandler: handler)
+        }) else {
+            Logger.warning { "KVO registration refused by LaunchServices \(self.debugId)" }
+            return nil
+        }
+        return observation
     }
 
     deinit {
@@ -130,11 +143,9 @@ class Application: NSObject {
         // `Applications.removeRunningApplications`. Checked against the generation this object registered,
         // so a late deinit cannot tear down a replacement process that reused the pid.
         AxObserverRegistry.shared.processExited(state.pid, generation: trackingGeneration)
-        // `NSRunningApplication` KVO removal can throw NSInternalInconsistencyException
-        // ("Failed to register for runningApplicationNotificationCallback") — an Apple bug
-        // when the underlying notification XPC service has gone away (e.g. observed app
-        // terminated, or we are quitting). Pre-emptively invalidate inside an ObjC try/catch;
-        // the subsequent automatic ivar destroy of `kvObservers` is then a no-op.
+        // Removing the observation raises the same AppKit exception as registering it (see `observeMirror`),
+        // here when the notification XPC service has gone away: the observed app terminated, or we are
+        // quitting. Invalidate inside an ObjC try/catch, so the automatic ivar destroy below is a no-op.
         let observers = kvObservers
         kvObservers = nil
         ObjCExceptionCatcher.catching {

@@ -79,7 +79,7 @@ final class AxObserverHealthTests: XCTestCase {
             .beginSubscription(process, .titleChanged)) else { return XCTFail("subscription did not start") }
         guard case let .observerRebuildRequired(_, replacement) = AxObserverHealth.reduce(&state,
             .subscriptionResult(process, observerGeneration: generation, .titleChanged,
-                .invalidObserver, at: time(27)), policy: policy) else {
+                .failed(.invalidObserver), at: time(27)), policy: policy) else {
             return XCTFail("observer rebuild did not start")
         }
         XCTAssertEqual(AxObserverHealth.reduce(&state, .observerCreationResult(process,
@@ -95,12 +95,11 @@ final class AxObserverHealthTests: XCTestCase {
                            .capabilitySubscribed(.focusedWindowChanged))
             XCTAssertEqual(state.entry(for: process)?.capabilities, [.focusedWindowChanged])
             XCTAssertEqual(state.entry(for: process)?.lifecycle, .healthy)
-            XCTAssertEqual(state.entry(for: process)?.diagnostics.lastSuccess, time(7))
         }
     }
 
     func testUnsupportedAndNotImplementedAreIndependent() {
-        for result in [AxSubscriptionResult.notificationUnsupported, .notImplemented] {
+        for result in [AxSubscriptionResult.failed(.notificationUnsupported), .failed(.notImplemented)] {
             var state = state([process])
             var generation = begin(&state, process, .focusedWindowChanged)
             _ = complete(&state, process, generation, .focusedWindowChanged, .success)
@@ -116,16 +115,16 @@ final class AxObserverHealthTests: XCTestCase {
     func testCannotCompleteUsesShortExponentialBudgetThenSparseCooldown() {
         var state = state([process])
         var generation = begin(&state, process)
-        XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, 0),
+        XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), 0),
                        .retryScheduled(.focusedWindowChanged, at: time(10), sparse: false))
         XCTAssertEqual(state.entry(for: process)?.lifecycle, .unresponsive)
         _ = AxObserverHealth.reduce(&state, .cooldownElapsed(process, at: time(10)), policy: policy)
         generation = begin(&state, process)
-        XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, 10),
+        XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), 10),
                        .retryScheduled(.focusedWindowChanged, at: time(30), sparse: false))
         _ = AxObserverHealth.reduce(&state, .cooldownElapsed(process, at: time(30)), policy: policy)
         generation = begin(&state, process)
-        XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, 30),
+        XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), 30),
                        .retryScheduled(.focusedWindowChanged, at: time(55), sparse: true))
         XCTAssertEqual(state.entry(for: process)?.diagnostics.nextRetry, time(55))
     }
@@ -137,7 +136,7 @@ final class AxObserverHealthTests: XCTestCase {
         var at: UInt64 = 0
         for expected in [10, 30, 55, 105, 205, 305] {
             let generation = begin(&state, process)
-            XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, at),
+            XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), at),
                            .retryScheduled(.focusedWindowChanged, at: time(UInt64(expected)),
                                            sparse: expected >= 55))
             at = UInt64(expected)
@@ -148,12 +147,12 @@ final class AxObserverHealthTests: XCTestCase {
     func testCannotCompleteBudgetIsIndependentPerCapability() {
         var state = state([process])
         var generation = begin(&state, process, .focusedWindowChanged)
-        _ = complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, 0)
+        _ = complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), 0)
         _ = AxObserverHealth.reduce(&state, .cooldownElapsed(process, at: time(10)), policy: policy)
         generation = begin(&state, process, .focusedWindowChanged)
-        _ = complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, 10)
+        _ = complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), 10)
         generation = begin(&state, process, .mainWindowChanged)
-        XCTAssertEqual(complete(&state, process, generation, .mainWindowChanged, .cannotComplete, 10),
+        XCTAssertEqual(complete(&state, process, generation, .mainWindowChanged, .failed(.cannotComplete), 10),
                        .retryScheduled(.mainWindowChanged, at: time(20), sparse: false))
         XCTAssertEqual(state.entry(for: process)?.diagnostics.capabilityConsecutiveCannotComplete,
                        [.focusedWindowChanged: 2, .mainWindowChanged: 1])
@@ -166,14 +165,14 @@ final class AxObserverHealthTests: XCTestCase {
     func testSuccessAndCallbackDoNotResetAnotherCapabilityBudget() {
         var state = state([process])
         var generation = begin(&state, process, .focusedWindowChanged)
-        _ = complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, 0)
+        _ = complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), 0)
         _ = AxObserverHealth.reduce(&state, .cooldownElapsed(process, at: time(10)), policy: policy)
         generation = begin(&state, process, .mainWindowChanged)
         _ = complete(&state, process, generation, .mainWindowChanged, .success, 10)
         _ = AxObserverHealth.reduce(&state, .callback(process, observerGeneration: generation,
                                                       .mainWindowChanged, at: time(11)), policy: policy)
         generation = begin(&state, process, .focusedWindowChanged)
-        XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, 11),
+        XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), 11),
                        .retryScheduled(.focusedWindowChanged, at: time(31), sparse: false))
         XCTAssertEqual(state.entry(for: process)?.diagnostics.capabilityConsecutiveCannotComplete,
                        [.focusedWindowChanged: 2])
@@ -182,7 +181,7 @@ final class AxObserverHealthTests: XCTestCase {
     func testCooldownDoesNotBecomeHealthyAndCanRetryIndefinitely() {
         var state = state([process])
         let generation = begin(&state, process)
-        _ = complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, 0)
+        _ = complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), 0)
         XCTAssertEqual(
             AxObserverHealth.reduce(&state, .cooldownElapsed(process, at: time(9)), policy: policy),
             .ignored(.cooldown)
@@ -197,12 +196,11 @@ final class AxObserverHealthTests: XCTestCase {
     }
 
     func testEveryBoundedRecoveryTriggerTransitionsWhenPermitted() {
-        let triggers: [AxRecoveryTrigger] = [.processBecameFrontmost, .windowDiscovered, .semanticDomainDirty,
-                                             .wake, .unlock, .recoveryTick]
+        let triggers: [AxRecoveryTrigger] = [.processBecameFrontmost, .wake, .unlock, .recoveryTick]
         for trigger in triggers {
             var state = state([process])
             let generation = begin(&state, process)
-            _ = complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, 0)
+            _ = complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), 0)
             XCTAssertEqual(AxObserverHealth.reduce(&state, .recoveryTriggered(process, trigger, at: time(10)),
                                                    policy: policy), .recoveryStarted(trigger))
             XCTAssertEqual(state.entry(for: process)?.lifecycle, .recovering)
@@ -212,17 +210,16 @@ final class AxObserverHealthTests: XCTestCase {
     func testSuccessfulAxCallBypassesCooldownWithoutResettingCapabilityBudget() {
         var state = state([process])
         let generation = begin(&state, process)
-        _ = complete(&state, process, generation, .focusedWindowChanged, .cannotComplete, 0)
+        _ = complete(&state, process, generation, .focusedWindowChanged, .failed(.cannotComplete), 0)
         XCTAssertEqual(AxObserverHealth.reduce(&state, .recoveryTriggered(process, .otherAxCallSucceeded,
                                                                           at: time(1)), policy: policy),
                        .recoveryStarted(.otherAxCallSucceeded))
-        XCTAssertEqual(state.entry(for: process)?.diagnostics.lastSuccess, time(1))
         XCTAssertEqual(state.entry(for: process)?.diagnostics.capabilityConsecutiveCannotComplete,
                        [.focusedWindowChanged: 1])
     }
 
     func testInvalidElementAndObserverRebuildAndRejectOldGeneration() {
-        for result in [AxSubscriptionResult.invalidUIElement, .invalidObserver] {
+        for result in [AxSubscriptionResult.failed(.invalidUIElement), .failed(.invalidObserver)] {
             var state = state([process])
             let generation = begin(&state, process)
             XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, result),
@@ -235,7 +232,7 @@ final class AxObserverHealthTests: XCTestCase {
     }
 
     func testInvalidArgumentAndGenericFailureUseSparseDegradedCooldown() {
-        for result in [AxSubscriptionResult.invalidArgument, .genericFailure] {
+        for result in [AxSubscriptionResult.failed(.invalidArgument), .failed(.genericFailure)] {
             var state = state([process])
             let generation = begin(&state, process)
             XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, result, 5),
@@ -247,7 +244,7 @@ final class AxObserverHealthTests: XCTestCase {
     func testApiDisabledGatesEveryPidUntilGlobalRecovery() {
         var state = state([process, other])
         let generation = begin(&state, process)
-        XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .apiDisabled),
+        XCTAssertEqual(complete(&state, process, generation, .focusedWindowChanged, .failed(.apiDisabled)),
                        .globalPermissionFailed)
         XCTAssertTrue(state.hasGlobalPermissionFailure)
         XCTAssertEqual(state.entry(for: other)?.lifecycle, .globalPermissionFailure)
@@ -268,7 +265,7 @@ final class AxObserverHealthTests: XCTestCase {
     func testProcessStartedDuringGlobalPermissionFailureJoinsGateAndRecovers() {
         var state = state([process])
         let generation = begin(&state, process)
-        _ = complete(&state, process, generation, .focusedWindowChanged, .apiDisabled)
+        _ = complete(&state, process, generation, .focusedWindowChanged, .failed(.apiDisabled))
         XCTAssertEqual(AxObserverHealth.reduce(&state, .processStarted(other), policy: policy),
                        .processRegistered(other))
         XCTAssertEqual(state.entry(for: other)?.lifecycle, .globalPermissionFailure)
@@ -284,7 +281,7 @@ final class AxObserverHealthTests: XCTestCase {
     func testProcessReplacementDuringGlobalPermissionFailureJoinsGateAndRecovers() {
         var state = state([process])
         let generation = begin(&state, process)
-        _ = complete(&state, process, generation, .focusedWindowChanged, .apiDisabled)
+        _ = complete(&state, process, generation, .focusedWindowChanged, .failed(.apiDisabled))
         XCTAssertEqual(AxObserverHealth.reduce(&state, .processStarted(replacement), policy: policy),
                        .processGenerationReplaced(process, cancelledObserverGeneration: generation))
         XCTAssertEqual(state.entry(for: replacement)?.lifecycle, .globalPermissionFailure)
@@ -299,12 +296,11 @@ final class AxObserverHealthTests: XCTestCase {
         var generation = begin(&state, process, .focusedWindowChanged)
         _ = complete(&state, process, generation, .focusedWindowChanged, .success)
         generation = begin(&state, process, .mainWindowChanged)
-        _ = complete(&state, process, generation, .mainWindowChanged, .genericFailure)
+        _ = complete(&state, process, generation, .mainWindowChanged, .failed(.genericFailure))
         XCTAssertEqual(AxObserverHealth.reduce(&state, .callback(process, observerGeneration: generation,
                                                                  .focusedWindowChanged, at: time(9)),
                                                policy: policy),
                        .callbackAccepted(.focusedWindowChanged))
-        XCTAssertEqual(state.entry(for: process)?.diagnostics.lastCallback, time(9))
         XCTAssertEqual(state.entry(for: process)?.lifecycle, .degraded)
         XCTAssertEqual(state.entry(for: process)?.notifications[.mainWindowChanged], .cooldown(until: time(100)))
     }
@@ -373,7 +369,7 @@ final class AxObserverHealthTests: XCTestCase {
         }
         _ = AxObserverHealth.reduce(&s, .beginSubscription(process, .focusedTabChanged), policy: policy)
         _ = AxObserverHealth.reduce(&s, .subscriptionResult(process, observerGeneration: 1, .focusedTabChanged,
-                                                            .notificationUnsupported, at: time(2)),
+                                                            .failed(.notificationUnsupported), at: time(2)),
                                     policy: policy)
         XCTAssertEqual(s.entry(for: process)?.lifecycle, .healthy)
         XCTAssertEqual(s.entry(for: process)?.notifications[.focusedTabChanged], .unsupported)
@@ -396,26 +392,33 @@ final class AxObserverHealthTests: XCTestCase {
 
     func testAxNodeReplacementAlwaysKeepsTheWindow() {
         XCTAssertEqual(AxElementEndPolicy.decide(ax: .foundReplacement, surfacePresent: false,
-            isTabbed: false, groupShrank: false, axQueryCoversWindow: true), .replacementFound)
+            isTabbed: false, groupShrank: false, groupGone: false, axQueryCoversWindow: true), .replacementFound)
     }
 
     func testAxDestroyAndWindowServerAbsenceConfirmClose() {
         XCTAssertEqual(AxElementEndPolicy.decide(ax: .noAnswer, surfacePresent: false,
-            isTabbed: true, groupShrank: false, axQueryCoversWindow: false), .confirmedClosed)
+            isTabbed: true, groupShrank: false, groupGone: false, axQueryCoversWindow: false), .confirmedClosed)
     }
 
     func testRetainedSurfaceDoesNotShieldSemanticClose() {
         XCTAssertEqual(AxElementEndPolicy.decide(ax: .absent, surfacePresent: true,
-            isTabbed: false, groupShrank: false, axQueryCoversWindow: true), .confirmedClosed)
+            isTabbed: false, groupShrank: false, groupGone: false, axQueryCoversWindow: true), .confirmedClosed)
+    }
+
+    func testWholeTabGroupCloseConfirmsWhenNoPublishedWindowHostsTheGroup() {
+        XCTAssertEqual(AxElementEndPolicy.decide(ax: .absent, surfacePresent: true,
+            isTabbed: true, groupShrank: false, groupGone: true, axQueryCoversWindow: true), .confirmedClosed)
+        XCTAssertEqual(AxElementEndPolicy.decide(ax: .noAnswer, surfacePresent: true,
+            isTabbed: true, groupShrank: false, groupGone: true, axQueryCoversWindow: true), .inconclusive)
     }
 
     func testAmbiguousTabAndOutOfScopeAbsencesRemainPending() {
         XCTAssertEqual(AxElementEndPolicy.decide(ax: .absent, surfacePresent: true,
-            isTabbed: true, groupShrank: false, axQueryCoversWindow: true), .inconclusive)
+            isTabbed: true, groupShrank: false, groupGone: false, axQueryCoversWindow: true), .inconclusive)
         XCTAssertEqual(AxElementEndPolicy.decide(ax: .absent, surfacePresent: true,
-            isTabbed: false, groupShrank: false, axQueryCoversWindow: false), .inconclusive)
+            isTabbed: false, groupShrank: false, groupGone: false, axQueryCoversWindow: false), .inconclusive)
         XCTAssertEqual(AxElementEndPolicy.decide(ax: .absent, surfacePresent: true,
-            isTabbed: true, groupShrank: true, axQueryCoversWindow: true), .confirmedClosed)
+            isTabbed: true, groupShrank: true, groupGone: false, axQueryCoversWindow: true), .confirmedClosed)
     }
 
 }

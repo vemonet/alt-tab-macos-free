@@ -27,7 +27,7 @@ enum Symbols: String {
     // Feedback window icons
     case ladybug = "􀯔"               // ladybug
     case lightbulb = "􀛭"             // lightbulb
-    // Segmented-control / button icons (previously gated by macOS 11)
+    // Segmented-control / button icons
     case plus = "􀅼"                  // plus
     case minus = "􀅽"                 // minus
     case minusCircleFill = "􀁏"       // minus.circle.fill
@@ -55,8 +55,11 @@ class TileFontIconView: NSView {
     }
 
     struct SymbolCacheKey: Hashable {
+        // periphery:ignore - read by the synthesized Hashable
         var symbol: String
+        // periphery:ignore - read by the synthesized Hashable
         var size: CGFloat
+        // periphery:ignore - read by the synthesized Hashable
         var colorKey: String
     }
 
@@ -98,7 +101,8 @@ class TileFontIconView: NSView {
     private let badgeFont: NSFont
     private let badgeContainerHeight: CGFloat
     private let badgeHorizontalPadding: CGFloat
-    private var text = ""
+    /// Readable so `--qa-state` can report the badge as drawn (`QaTile.dockLabel`).
+    private(set) var text = ""
     private var cachedSymbolAttributedString: NSAttributedString?
     private var cachedBadgeAttributedString: NSAttributedString?
     private var cachedBadgeTextSize = NSSize.zero
@@ -166,12 +170,8 @@ class TileFontIconView: NSView {
         replaceTextIfNeeded(text)
     }
 
-    func setStar() {
-        setStarLike(false)
-    }
-
     func setFilledStar() {
-        setStarLike(true)
+        replaceTextIfNeeded(rendering == .badge ? "" : Symbols.filledCircledStar.rawValue)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -180,11 +180,6 @@ class TileFontIconView: NSView {
         } else {
             drawSymbol()
         }
-    }
-
-    private func setStarLike(_ filled: Bool) {
-        let star = rendering == .badge ? "" : (filled ? Symbols.filledCircledStar.rawValue : Symbols.circledStar.rawValue)
-        replaceTextIfNeeded(star)
     }
 
     private func replaceTextIfNeeded(_ newText: String) {

@@ -104,9 +104,7 @@ class UpgradeTab {
         let button = NSButton(title: title, target: nil, action: nil)
         button.isBordered = false
         button.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        if #available(macOS 10.14, *) {
-            button.contentTintColor = .controlAccentColor
-        }
+        button.contentTintColor = .controlAccentColor
         button.onAction = { _ in onClick() }
         return button
     }
@@ -299,11 +297,7 @@ class UpgradeTab {
     private static func makeKeyField(prefilled: String) -> NSTextField {
         let placeholder = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
         let font: NSFont
-        if #available(macOS 10.15, *) {
-            font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
-        } else {
-            font = NSFont(name: "Menlo", size: 14) ?? NSFont.systemFont(ofSize: 14)
-        }
+        font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
         let textSize = (placeholder as NSString).size(withAttributes: [.font: font])
         let width = ceil(textSize.width) + 14
         let height = ceil(font.boundingRectForFont.height) + 10
@@ -333,16 +327,7 @@ class UpgradeTab {
                     presentSeatLimitSheet(key: key, instances: instances)
                     return
                 }
-                let alert = NSAlert()
-                alert.alertStyle = .warning
-                alert.messageText = NSLocalizedString("Activation failed", comment: "")
-                alert.informativeText = error.localizedDescription
-                addDebugInfoToAlert(alert, error)
-                alert.addButton(withTitle: NSLocalizedString("OK", comment: ""))
-                alert.addButton(withTitle: NSLocalizedString("My Account", comment: ""))
-                if alert.runModal() == .alertSecondButtonReturn {
-                    openAccountPage()
-                }
+                presentLicenseError(NSLocalizedString("Activation failed", comment: ""), error)
             }
         }
     }
@@ -408,17 +393,21 @@ class UpgradeTab {
                 refreshStatus()
                 App.resetPreferencesDependentComponents()
             case .failure(let error):
-                let alert = NSAlert()
-                alert.alertStyle = .warning
-                alert.messageText = NSLocalizedString("Deactivation failed", comment: "")
-                alert.informativeText = error.localizedDescription
-                addDebugInfoToAlert(alert, error)
-                alert.addButton(withTitle: NSLocalizedString("OK", comment: ""))
-                alert.addButton(withTitle: NSLocalizedString("My Account", comment: ""))
-                if alert.runModal() == .alertSecondButtonReturn {
-                    openAccountPage()
-                }
+                presentLicenseError(NSLocalizedString("Deactivation failed", comment: ""), error)
             }
+        }
+    }
+
+    private static func presentLicenseError(_ title: String, _ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        addDebugInfoToAlert(alert, error)
+        alert.addButton(withTitle: NSLocalizedString("OK", comment: ""))
+        alert.addButton(withTitle: NSLocalizedString("My Account", comment: ""))
+        if alert.runModal() == .alertSecondButtonReturn {
+            openAccountPage()
         }
     }
 
@@ -436,11 +425,7 @@ class UpgradeTab {
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 350, height: 0))
         textView.isEditable = false
         textView.isSelectable = true
-        if #available(macOS 10.15, *) {
-            textView.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-        } else {
-            textView.font = NSFont(name: "Menlo", size: 10) ?? NSFont.systemFont(ofSize: 10)
-        }
+        textView.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         textView.string = debugInfo
         textView.textContainer?.widthTracksTextView = true
         textView.isVerticallyResizable = true
@@ -467,7 +452,7 @@ class UpgradeTab {
         SettingsWindow.shared?.showUpgradeView()
     }
 
-    static func showAutoActivating(_ licenseKey: String) {
+    static func showAutoActivating() {
         navigateToUpgradeTab()
     }
 
@@ -505,9 +490,7 @@ final class ProHeroButton: ProGradientButton {
         let title = NSMutableAttributedString(string: NSLocalizedString("Get Pro", comment: ""), attributes: attrs)
         title.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: title.length))
         attributedTitle = title
-        if #available(macOS 10.14, *) {
-            contentTintColor = .white
-        }
+        contentTintColor = .white
     }
 
     required init?(coder: NSCoder) {

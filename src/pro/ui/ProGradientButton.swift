@@ -4,7 +4,6 @@ class ProGradientButton: NSButton {
     static let cornerRadius = CGFloat(7)
 
     private var isPressed = false
-    private var isShining = false
     let gradientLayer = ProGradient.makeLayer(flipped: true)
 
     override init(frame frameRect: NSRect) {
@@ -32,26 +31,21 @@ class ProGradientButton: NSButton {
 
     override func layout() {
         super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        gradientLayer.frame = bounds
-        layer?.shadowPath = CGPath(roundedRect: bounds,
-            cornerWidth: ProGradientButton.cornerRadius,
-            cornerHeight: ProGradientButton.cornerRadius,
-            transform: nil)
-        CATransaction.commit()
+        caTransaction {
+            gradientLayer.frame = bounds
+            layer?.shadowPath = CGPath(roundedRect: bounds,
+                cornerWidth: ProGradientButton.cornerRadius,
+                cornerHeight: ProGradientButton.cornerRadius,
+                transform: nil)
+        }
     }
 
     override func updateLayer() {
         super.updateLayer()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        gradientLayer.opacity = isPressed ? 0.82 : 1.0
-        CATransaction.commit()
+        caTransaction { gradientLayer.opacity = isPressed ? 0.82 : 1.0 }
     }
 
     override func mouseEntered(with event: NSEvent) {
-        guard !isShining else { return }
         playShineAnimation()
     }
 
@@ -72,29 +66,6 @@ class ProGradientButton: NSButton {
     }
 
     func playShineAnimation() {
-        let shine = CAGradientLayer()
-        shine.colors = [
-            NSColor.white.withAlphaComponent(0).cgColor,
-            NSColor.white.withAlphaComponent(0.3).cgColor,
-            NSColor.white.withAlphaComponent(0).cgColor,
-        ]
-        shine.locations = [0, 0.5, 1]
-        shine.startPoint = CGPoint(x: 0, y: 0.5)
-        shine.endPoint = CGPoint(x: 1, y: 0.5)
-        shine.frame = CGRect(x: -bounds.width, y: 0, width: bounds.width, height: bounds.height)
-        gradientLayer.addSublayer(shine)
-        isShining = true
-        let animation = CABasicAnimation(keyPath: "position.x")
-        animation.fromValue = -bounds.width / 2
-        animation.toValue = bounds.width + bounds.width / 2
-        animation.duration = 0.6
-        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak self] in
-            shine.removeFromSuperlayer()
-            self?.isShining = false
-        }
-        shine.add(animation, forKey: "shine")
-        CATransaction.commit()
+        ProGradient.playShine(over: gradientLayer)
     }
 }

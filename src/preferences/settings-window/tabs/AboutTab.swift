@@ -1,10 +1,6 @@
 import Cocoa
 
 class AboutTab {
-    static func initTab() -> NSView {
-        makeContentView()
-    }
-
     static func makeContentView(_ fitToContent: Bool = true, _ showFeedbackButton: Bool = true, _ centerHero: Bool = false) -> NSView {
         let appIcon = LightImageView()
         appIcon.translatesAutoresizingMaskIntoConstraints = false
@@ -68,8 +64,7 @@ class AboutWindow: NSPanel {
     static var shared: AboutWindow?
     private var usageTextView: NSTextView!
 
-    static var canBecomeKey_ = true
-    override var canBecomeKey: Bool { Self.canBecomeKey_ }
+    override var canBecomeKey: Bool { SecondaryWindows.canBecomeKey }
 
     convenience init() {
         self.init(contentRect: NSRect(x: 0, y: 0, width: 380, height: 450), styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
@@ -85,11 +80,7 @@ class AboutWindow: NSPanel {
     }
 
     private func setupWindow() {
-        isReleasedWhenClosed = false
-        hidesOnDeactivate = false
-        title = String(format: NSLocalizedString("About %@", comment: ""), App.name)
-        titleVisibility = .hidden
-        titlebarAppearsTransparent = true
+        applySecondaryWindowChrome(String(format: NSLocalizedString("About %@", comment: ""), App.name))
     }
 
     private func setupView() {
@@ -109,7 +100,7 @@ class AboutWindow: NSPanel {
         stack.translatesAutoresizingMaskIntoConstraints = false
         let aboutView = AboutTab.makeContentView(false, false, true)
         let columnWidth = frame.width - 2 * Self.contentPadding
-        usageTextView = Self.makeUsageTextView(columnWidth)
+        usageTextView = NSTextView.makeReadOnlyMarkdownView(columnWidth)
         let acknowledgmentsView = AcknowledgmentsTab.makeContentView(columnWidth: columnWidth, shouldFit: false, verticallyStacked: true)
         acknowledgmentsView.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(aboutView)
@@ -131,18 +122,6 @@ class AboutWindow: NSPanel {
             acknowledgmentsView.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
             acknowledgmentsView.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
         ])
-    }
-
-    private static func makeUsageTextView(_ columnWidth: CGFloat) -> NSTextView {
-        let textView = NSTextView()
-        textView.textContainer!.widthTracksTextView = true
-        textView.translatesAutoresizingMaskIntoConstraints = false
-        textView.drawsBackground = false
-        textView.isSelectable = true
-        textView.isEditable = false
-        textView.enabledTextCheckingTypes = 0
-        textView.frame.size.width = columnWidth
-        return textView
     }
 
     private func updateUsageStats() {

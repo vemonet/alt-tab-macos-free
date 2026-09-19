@@ -67,7 +67,7 @@ class WindowServerEvents {
             if let app = runningApp(note) {
                 let pid = app.processIdentifier
                 Applications.frontmostPid = pid
-                let frontmostApp = Applications.findOrCreate(pid, false)
+                let frontmostApp = Applications.findOrCreate(pid)
                 let now = ProcessInfo.processInfo.systemUptime
                 var knownTarget: CGWindowID? = nil
                 if let intent = altTabInitiatedFocus, intent.pid == pid, now - intent.at < 1 {
@@ -114,6 +114,10 @@ class WindowServerEvents {
         }
     }
 
+    /// The four window-lifecycle cases each tell `MissionControl` to take a look: the overlay that says a
+    /// gesture is up is created, ordered in, ordered out and destroyed like any other surface, and that is
+    /// the only announcement left on macOS 27 (see `MissionControl`). The look is coalesced there, so every
+    /// other window doing the same thing costs one throttled window-list read.
     private static func handle(_ event: UInt32, _ w0: UInt32, _ space: UInt64, _ widInSpace: UInt32,
                               _ at: TimeInterval) {
         guard let n = WsEventRouting.notification(event) else { return }
@@ -130,10 +134,11 @@ class WindowServerEvents {
             // Creation bookkeeping lives in the reducer (`.windowCreated`). Window numbers are unique for
             // the login session, so this event must not discard facts already learned for the same surface.
             // Discovery subscribes after it has read the level.
-            break
+            MissionControl.surfacesChanged()
         case .windowDestroyed:
             unsubscribe(w0)
             WindowSurfaceInventory.remove(w0)
+            MissionControl.surfacesChanged()
         case .windowOrderedIn:
             // Our own panel's orderedIn is the true "pixels on screen" moment — it can trail the show's
             // main-thread work by ~500ms while the WindowServer settles a Space transition. Anchor the
@@ -142,6 +147,9 @@ class WindowServerEvents {
                let panel = TilesPanel.shared, panel.windowNumber > 0, w0 == CGWindowID(panel.windowNumber) {
                 session.panelBecameVisibleAt = ProcessInfo.processInfo.systemUptime
             }
+            MissionControl.surfacesChanged()
+        case .windowOrderedOut:
+            MissionControl.surfacesChanged()
         default:
             break
         }
@@ -205,12 +213,19 @@ class WindowServerEvents {
         }
     }
 
+    static func armStandaloneTabCheck(_ wid: CGWindowID, siblingWid: CGWindowID, attempt: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + recheckInterval) {
+            TrackedWindowStateBridge.dispatch(.standaloneTabCheck(wid: wid, siblingWid: siblingWid,
+                                                                  attempt: attempt))
+        }
+    }
+
     /// A plain activation names only a process. When the model has no focused-window fact for it, perform the
     /// one read that fills that hole. A dedicated element carries the measured 250ms cap, so a wedged app can
     /// occupy one bounded worker but never the main thread or the observer runloop. The answer carries the
     /// issue sequence allocated by `AttentionDriver`, and therefore loses to any app answer that overtook it.
     static func readFocusedWindowOnActivation(_ pid: pid_t) {
-        guard Applications.findOrCreate(pid, false) != nil else { return }
+        guard Applications.findOrCreate(pid) != nil else { return }
         AXCallScheduler.shared.schedule(key: "pid-\(pid)-activation-focus", pid: pid) {
             let appAx = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(appAx, 0.25)
@@ -258,7 +273,7 @@ class WindowServerEvents {
         guard !list.isEmpty else { return }
         // The WHOLE set goes out every time, not the delta. `SLSRequestNotificationsForWindows` REPLACES this
         // connection's watch list; it does not add to it. Sending only the new wids left exactly one window
-        // watched and every previously-watched one deaf: measured over a QA run, 0 order-outs, 0 destroys and
+        // watched and every previously-watched one deaf: measured live, 0 order-outs, 0 destroys and
         // 0 focus events arrived (vs 91 / 143 / 51 for the same tests with the full array), while the
         // connection-wide creates/moves kept coming, so the app looked alive and simply never removed a
         // closed window, never noticed a minimize, and never updated the MRU.
@@ -278,8 +293,9 @@ class WindowServerEvents {
     /// a sweep sends one request.
     ///
     /// "App-level" is a precondition, not a formality: both callers gate on it (the sweep filters its
-    /// enumeration, `Applications.discoverWindow` runs `isApplicationWindow` first). Subscribing before that
-    /// verdict is what put every menu, tooltip and Dock indicator on this connection's per-window stream.
+    /// enumeration, `Applications.discoverWindow` runs `WindowAdmissionResolver.shouldAcquireSemantics`
+    /// first). Subscribing before that verdict is what put every menu, tooltip and Dock indicator on this
+    /// connection's per-window stream.
     static func subscribe(_ wid: CGWindowID) {
         guard wsWindows.insert(wid).inserted else { return }
         scheduleRequestNotifications()

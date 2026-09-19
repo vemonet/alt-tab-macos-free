@@ -2,9 +2,11 @@
 
 ## Summary
 
-AltTab triggers its switcher via a Carbon `RegisterEventHotKey`. A native macOS symbolic hotkey
-(⌘⇥ / ⌘⇧⇥ / ⌘`), when enabled, is consumed by the Dock/WindowServer **before** any app-level
-Carbon hotkey — so binding ⌘⇥ to AltTab requires disabling the corresponding native one.
+AltTab triggers its switcher via a Carbon `RegisterEventHotKey`. The native ⌘⇥ / ⌘⇧⇥ symbolic
+hotkeys, when enabled, are consumed by the Dock/WindowServer **before** any app-level Carbon hotkey — so
+binding ⌘⇥ to AltTab requires disabling the corresponding native one. ⌘` is not in that set: the OS
+handles it inside the front app, after the Carbon hotkey has already been matched, so binding it needs
+no native disable (see `CGSSymbolicHotKey`).
 
 `NativeHotkeyResolver.resolve` is the pure kernel for that decision: given the configured shortcuts
 (as `ShortcutSnapshot` value records) and the modifier flags of the active hold-shortcuts, it
@@ -25,8 +27,8 @@ iteration order isn't stable across launches) — leaving native ⌘⇥ enabled 
   is dropped. The `enable` set is the complement over `CGSSymbolicHotKey.allCases`.
 - **⌘⇥ pairing.** Disabling `.commandTab` implicitly disables `.commandShiftTab` too, so the native
   reverse switcher doesn't fire while AltTab owns ⌘⇥.
-- **No globals.** `combinedModifiersMatch` previously read `ControlsTab.shortcuts` to find the hold
-  modifiers; the kernel takes them as an explicit `holdShortcutModifiers: [UInt32]` parameter, so the
+- **No globals.** `combinedModifiersMatch` takes the hold modifiers as an explicit
+  `holdShortcutModifiers: [UInt32]` parameter rather than reading `ControlsTab.shortcuts`, so the
   resolver is independent of any global state.
 - **Primitive value record.** `ShortcutSnapshot` uses `UInt32` for both modifiers and keycode (no
   ShortcutRecorder / `Shortcut` types) so the kernel file compiles in the unit-tests target.
@@ -46,9 +48,9 @@ Mirrors `NativeHotkeyResolverTests.swift` 1:1.
 - **testCommandTabAloneAlsoDisablesReverseSwitcher** — binding ⌘⇥ alone still suppresses native
   ⌘⇧⇥ via the pairing rule.
 
-### C. ⌘` alone — disables only that hotkey
-- **testCommandKeyAboveTabAloneDisablesOnlyThatHotkey** — no cross-talk between Tab and grave-key
-  predicates; only `.commandKeyAboveTab` is disabled.
+### C. ⌘` alone — disables nothing
+- **testCommandKeyAboveTabAloneDisablesNothing** — binding ⌘` leaves both native switcher hotkeys
+  enabled; there is no native hotkey to disable for it.
 
 ### D. Default option config — no native switcher overlap
 - **testOptionTabDoesNotOverrideNativeSwitchers** — AltTab's default ⌥⇥ / hold ⌥ doesn't overlap

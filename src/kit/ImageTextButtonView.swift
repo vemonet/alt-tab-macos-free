@@ -120,7 +120,10 @@ class ImageTextButtonView: NSStackView {
             button.heightAnchor.constraint(equalTo: button.widthAnchor, multiplier: imageAspectRatio),
         ])
         button.identifier = NSUserInterfaceItemIdentifier(rawName)
-        button.onAction = { control in
+        // [weak self]: `button` is a strong subview here, and `onAction` is an associated object the
+        // control retains, so a strong capture closes a cycle that outlives the Settings window.
+        button.onAction = { [weak self] control in
+            guard let self else { return }
             self.state = .on
             self.onClick?(control)
         }
@@ -153,14 +156,7 @@ class ImageTextButtonView: NSStackView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
-        windowObservers.removeAll()
-        guard let window else { return }
-        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
-            windowObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                self?.updateStyle()
-            })
-        }
+        windowObservers = observeWindowKeyChanges(replacing: windowObservers) { [weak self] in self?.updateStyle() }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -171,17 +167,11 @@ class ImageTextButtonView: NSStackView {
     func updateStyle() {
         let isSelected = button.state == .on
         let isKey = window?.isKeyWindow ?? false
-        let selectedColor: NSColor
-        if #available(macOS 10.14, *) {
-            selectedColor = isKey ? NSColor.systemAccentColor : NSColor.unemphasizedSelectedContentBackgroundColor
-        } else {
-            selectedColor = isKey ? NSColor.systemAccentColor : NSColor.lightGray
+        let selectedColor: NSColor = isKey ? NSColor.systemAccentColor : NSColor.unemphasizedSelectedContentBackgroundColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let borderColor: NSColor = isSelected ? selectedColor : NSColor.lightGray.withAlphaComponent(0.3)
+            button.layer?.borderColor = borderColor.cgColor
         }
-        let previousAppearance = NSAppearance.current
-        NSAppearance.current = effectiveAppearance
-        let borderColor: NSColor = isSelected ? selectedColor : NSColor.lightGray.withAlphaComponent(0.3)
-        button.layer?.borderColor = borderColor.cgColor
-        NSAppearance.current = previousAppearance
         button.layer?.borderWidth = ImageTextButtonView.borderWidth
         label.font = isSelected ? NSFont.boldSystemFont(ofSize: 12) : NSFont.systemFont(ofSize: 12)
         alphaValue = isPressed ? 0.7 : 1.0

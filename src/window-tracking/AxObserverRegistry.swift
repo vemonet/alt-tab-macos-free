@@ -106,6 +106,32 @@ class AxObserverRegistry {
 
     static func forgetTrackedElements(pid: pid_t) {
         trackedElements.withLock { $0[pid] = nil }
+        nonWindowElements.withLock { $0[pid] = nil }
+    }
+
+    /// Elements that answered a non-window role to a title notification, per pid, so the next delivery from
+    /// the same element costs nothing. The subscription is on the application element, and a web page with a
+    /// live timer retitles one `AXStaticText` several times a second: measured 88 of 100 deliveries from a
+    /// single element over 45s of one idle Chrome window, each paying two round trips to learn it was not
+    /// the window. A descendant never becomes a window (an `AXUIElementID` is not reused within a process),
+    /// so the verdict holds for the process's life; dropped with `forgetTrackedElements`.
+    ///
+    /// Bounded and FIFO: a page that re-creates its nodes would otherwise grow it without limit, and the
+    /// element it retitles most is the one that stays hot.
+    private static let nonWindowElements = ConcurrentMap<pid_t, [AXUIElement]>()
+    private static let nonWindowElementsCapacity = 32
+
+    private static func isKnownNonWindow(_ element: AXUIElement, pid: pid_t) -> Bool {
+        nonWindowElements.withLock { $0[pid]?.contains { CFEqual($0, element) } ?? false }
+    }
+
+    private static func noteNonWindow(_ element: AXUIElement, pid: pid_t) {
+        nonWindowElements.withLock { map in
+            var elements = map[pid] ?? []
+            elements.append(element)
+            if elements.count > nonWindowElementsCapacity { elements.removeFirst() }
+            map[pid] = elements
+        }
     }
 
     /// Which tracked window this dead element was. A linear `CFEqual` scan over one app's windows: no IPC, so
@@ -252,8 +278,8 @@ class AxObserverRegistry {
         publishHealth(process)
     }
 
-    /// Every `AXObserverCreate` result is checked. The old code force-unwrapped the observer and asked in a
-    /// comment whether it could ever be nil; it can, for a process that is already gone.
+    /// The observer is checked, never force-unwrapped: `AXObserverCreate` does return nil, for a process
+    /// that is already gone.
     private func makeObserver(_ process: ProcessGeneration, generation: UInt64)
         -> (entry: ObserverEntry?, error: AxObserverError?) {
         var observer: AXObserver?
@@ -322,7 +348,14 @@ class AxObserverRegistry {
         // owed when a process that had no working subscriptions gains one: that is the moment its windows
         // may be acquirable at last.
         if hadNothing, case .capabilitySubscribed = decision {
-            DispatchQueue.main.async { Applications.manuallyRefreshAllWindows() }
+            DispatchQueue.main.async {
+                // The rescan is owed a fresh surface budget or it cannot act on what this moment just
+                // taught it: the inventory sweep's give-up is keyed to the app's window set, so the
+                // verdicts it reached while this process was silent would refuse this very pass, and the
+                // app would keep its icon placeholder for as long as it keeps its window set still (#6031).
+                Applications.forgetAcquisitionFailures(pid: process.pid)
+                Applications.manuallyRefreshAllWindows()
+            }
         }
         switch decision {
         case let .retryScheduled(_, at, _): scheduleRetry(process, at)
@@ -422,21 +455,34 @@ class AxObserverRegistry {
     /// `AXCallScheduler` plus the per-wid throttle on the apply side are what bound an app that renames its
     /// window continuously.
     ///
-    /// **The role is read with the title, and decides whether the title counts.** A delivery names any
-    /// element of the app, and only a window's own element speaks for the window: `AxTitleNotificationPolicy`
-    /// says why, and #6011 is what it costs to skip. The role rides along in the same
-    /// `AXUIElementCopyMultipleAttributeValues`, so it costs no extra round trip.
+    /// **The role decides whether the title counts.** A delivery names any element of the app, and only a
+    /// window's own element speaks for the window: `AxTitleNotificationPolicy` says why, and #6011 is what
+    /// it costs to skip.
+    ///
+    /// Two local `CFEqual` scans run before any IPC, on the observer thread. An element cached as a window's
+    /// root (`trackedElements`) IS the window, so its wid is known and only the title is read. An element
+    /// already seen to be a descendant (`nonWindowElements`) is dropped outright. Anything else pays one read
+    /// for role and title together, and the wid only once the role says window, so a descendant's first
+    /// delivery costs one round trip rather than two and its later ones cost none.
     private func refreshTitle(_ process: ProcessGeneration, _ element: AXUIElement) {
+        guard !Self.isKnownNonWindow(element, pid: process.pid) else { return }
+        let trackedWid = Self.trackedWid(of: element, pid: process.pid)
         AXCallScheduler.shared.schedule(key: Self.perElementKey("axobs-title", process.pid, element),
                                         context: "axSemantics", pid: process.pid) {
-            guard let wid = try? element.cgWindowId(pid: process.pid), wid != 0,
-                  let attributes = try? element.attributes([kAXTitleAttribute, kAXRoleAttribute], pid: process.pid)
+            if let wid = trackedWid {
+                guard let title = try? element.attributes([kAXTitleAttribute], pid: process.pid).title else { return }
+                DispatchQueue.main.async { Applications.applyObservedTitle(wid: wid, title: title) }
+                return
+            }
+            guard let attributes = try? element.attributes([kAXTitleAttribute, kAXRoleAttribute], pid: process.pid)
                 else { return }
             switch AxTitleNotificationPolicy.verdict(role: attributes.role, title: attributes.title) {
                 case .ignoreNotTheWindow:
-                    Logger.debug { "axTitle #\(wid) named role=\(attributes.role ?? "nil"); ignored" }
+                    Self.noteNonWindow(element, pid: process.pid)
+                    Logger.debug { "axTitle pid=\(process.pid) named role=\(attributes.role ?? "nil"); ignored" }
                 case .ignoreNoTitle: break
                 case .apply(let title):
+                    guard let wid = try? element.cgWindowId(pid: process.pid), wid != 0 else { return }
                     Self.offerElement(process, wid, element, source: "axTitle")
                     DispatchQueue.main.async { Applications.applyObservedTitle(wid: wid, title: title) }
             }
@@ -495,10 +541,10 @@ class AxObserverRegistry {
         return .group(titles: group.titles, token: group.token)
     }
 
-    /// **Every notification arrives holding a live window element; three of the four handlers used to read
-    /// its wid and drop it.** Offering it costs nothing here: the wid it is keyed by was just read off this
-    /// same element, so the binding is proven rather than guessed. `Applications.applyObservedElement` owns
-    /// the decision, including the role check that keeps a descendant out of `Window.axUiElement`.
+    /// **Every notification arrives holding a live window element, so offer it rather than drop it.** It
+    /// costs nothing here: the wid it is keyed by was just read off this same element, so the binding is
+    /// proven rather than guessed. `Applications.applyObservedElement` owns the decision, including the
+    /// role check that keeps a descendant out of `Window.axUiElement`.
     ///
     /// The reason to bother is the other Space: the posting path has no Space term, so this is the only
     /// channel that hands over an element for a window `kAXWindows` hides, short of the brute-force sweep.
@@ -627,40 +673,31 @@ class AxObserverRegistry {
     /// is a busy process and cools down; `.notificationUnsupported` is permanent for THAT notification only
     /// and must not mark the whole observer unhealthy; `.apiDisabled` is global and must not be hammered per
     /// pid.
-    private static func result(from error: AXError) -> AxSubscriptionResult {
-        switch error {
-        case .success: return .success
-        case .notificationAlreadyRegistered: return .alreadyRegistered
+    ///
+    /// **Only OUR permission being gone is global.** Measured: several processes on a machine with
+    /// Accessibility granted still answer `kAXErrorAPIDisabled` (-25211) for their own reasons. Passing
+    /// that straight through set the provider's global-permission flag and every later subscription for
+    /// EVERY app was refused before it was attempted — 138 successful subscriptions, then silence. So the
+    /// escalation is gated on `AXIsProcessTrusted`, and an individual app's refusal is a per-pid
+    /// temporary failure like any other.
+    private static func error(from result: AXError) -> AxObserverError {
+        switch result {
         case .notificationUnsupported: return .notificationUnsupported
         case .notImplemented: return .notImplemented
         case .cannotComplete: return .cannotComplete
         case .invalidUIElement: return .invalidUIElement
         case .invalidUIElementObserver: return .invalidObserver
-        // **Only OUR permission being gone is global.** Measured: several processes on a machine with
-        // Accessibility granted still answer `kAXErrorAPIDisabled` (-25211) for their own reasons. Passing
-        // that straight through set the provider's global-permission flag and every later subscription for
-        // EVERY app was refused before it was attempted — 138 successful subscriptions, then silence. So the
-        // escalation is gated on `AXIsProcessTrusted`, and an individual app's refusal is a per-pid
-        // temporary failure like any other.
         case .apiDisabled: return AXIsProcessTrusted() ? .cannotComplete : .apiDisabled
         case .illegalArgument: return .invalidArgument
         default: return .genericFailure
         }
     }
 
-    private static func error(from result: AXError) -> AxObserverError {
-        switch result {
-        case .cannotComplete: return .cannotComplete
-        case .invalidUIElement: return .invalidUIElement
-        // **Only OUR permission being gone is global.** Measured: several processes on a machine with
-        // Accessibility granted still answer `kAXErrorAPIDisabled` (-25211) for their own reasons. Passing
-        // that straight through set the provider's global-permission flag and every later subscription for
-        // EVERY app was refused before it was attempted — 138 successful subscriptions, then silence. So the
-        // escalation is gated on `AXIsProcessTrusted`, and an individual app's refusal is a per-pid
-        // temporary failure like any other.
-        case .apiDisabled: return AXIsProcessTrusted() ? .cannotComplete : .apiDisabled
-        case .illegalArgument: return .invalidArgument
-        default: return .genericFailure
+    private static func result(from axError: AXError) -> AxSubscriptionResult {
+        switch axError {
+        case .success: return .success
+        case .notificationAlreadyRegistered: return .alreadyRegistered
+        default: return .failed(error(from: axError))
         }
     }
 }

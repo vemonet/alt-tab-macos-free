@@ -1,6 +1,7 @@
 import Cocoa
 import Carbon.HIToolbox.Events
 import ShortcutRecorder
+import UniformTypeIdentifiers
 
 enum SearchKeyResult {
     case handled
@@ -182,17 +183,7 @@ class TilesView {
     }
 
     private static func configureSearchField() {
-        searchField.placeholderString = NSLocalizedString("Search", comment: "")
-        searchField.sendsSearchStringImmediately = true
-        searchField.sendsWholeSearchString = true
-        searchField.bezelStyle = .roundedBezel
-        if #available(macOS 26.0, *) {
-            searchField.controlSize = .extraLarge
-        } else if #available(macOS 13.0, *) {
-            searchField.controlSize = .large
-        } else {
-            searchField.controlSize = .regular
-        }
+        searchField.applySearchStyle()
         searchField.usesSingleLineMode = true
         searchField.target = Self.self
         searchField.action = #selector(Self.searchFieldChanged(_:))
@@ -385,7 +376,6 @@ class TilesView {
         thumbnailOverView = TileOverView()
         thumbnailOverView.scrollView = scrollView
         lastRowSignature.removeAll()
-        TileView.invalidateTitleAttributesCache()
         cachedSearchBarHeight = nil
         Self.updateCachedSizes()
     }
@@ -768,7 +758,9 @@ class TilesDocumentView: FlippedView {
     private var timerResetLocation: NSPoint?
     private var dragAndDropTimer: Timer?
 
+    // periphery:ignore - AppKit private overrides, found by the ObjC runtime rather than called
     @objc func _windowChangedKeyState() {}
+    // periphery:ignore - AppKit private overrides, found by the ObjC runtime rather than called
     @objc func _layoutSubtreeWithOldSize(_ oldSize: NSSize) {}
 
     override func wantsPeriodicDraggingUpdates() -> Bool { false }
@@ -776,7 +768,7 @@ class TilesDocumentView: FlippedView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         // we only handle URLs (i.e. not text, image, or other draggable things)
-        registerForDraggedTypes([NSPasteboard.PasteboardType(kUTTypeURL as String)])
+        registerForDraggedTypes([NSPasteboard.PasteboardType(UTType.url.identifier)])
     }
 
     required init?(coder: NSCoder) {
@@ -806,9 +798,14 @@ class TilesDocumentView: FlippedView {
         let urls = (sender.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL]) ?? []
         guard DragAndDropResolver.canDrop(hasTarget: target != nil, hasWindow: target?.window_ != nil, hasAppBundleURL: appUrl != nil, urlCount: urls.count),
               let appUrl else { return false }
-        let open = try? NSWorkspace.shared.open(urls, withApplicationAt: appUrl, options: [], configuration: [:])
-        if open != nil { App.hideUi() }
-        return open != nil
+        // `openApplication` reports the launch outcome on a background queue, long after AppKit
+        // needs this return value. So the drop is accepted on the guard above, and a failed launch
+        // is only logged.
+        NSWorkspace.shared.open(urls, withApplicationAt: appUrl, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            if let error { Logger.error { "drag-and-drop failed to open urls: \(error)" } }
+        }
+        App.hideUi()
+        return true
     }
 
     override func concludeDragOperation(_ sender: NSDraggingInfo?) {

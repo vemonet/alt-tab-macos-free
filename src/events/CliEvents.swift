@@ -92,7 +92,7 @@ class CliServer {
         if rawValue == "--qa-state" {
             return qaState()
         }
-        // The provider timeline, drained rather than read: each record is reported exactly once, so a QA test
+        // The provider timeline, drained rather than read: each record is reported exactly once, so a test
         // gets the events of its own session and not the whole run's backlog. The harness writes them out as
         // NDJSON (`TrackingTelemetryNdjson`).
         if rawValue == "--qa-telemetry" {
@@ -110,6 +110,21 @@ class CliServer {
             let pids = Set(raw.split(separator: ",").compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) })
             AxObserverRegistry.muteDestroys(pids: pids)
             Logger.info { "QA: muting ax destroys for \(pids.isEmpty ? "no pids" : "\(pids.sorted())")" }
+            return noOutput
+        }
+        // **Fault injection: hold the main thread for a while.** Takes milliseconds, and returns before the
+        // stall starts so the caller can post events into it. Keyboard events keep arriving throughout — the
+        // Carbon hotkeys queue on the main run loop, the `.flagsChanged` tap keeps running on its own thread
+        // — and what they look like when main comes back is the thing under test.
+        //
+        // The machine does this on its own, rarely: on 2026-09-15 a 450ms gap under load made two alt-tab
+        // pairs arrive back to back and AltTab committed the wrong window. Waiting for that to happen again
+        // is not a test, so the gap is posed here instead. Nothing else can pose it: every other path into
+        // main is work AltTab would also have to do, which changes what the events land on.
+        if rawValue.hasPrefix("--qa-stall-main=") {
+            let ms = Int(rawValue.dropFirst("--qa-stall-main=".count)) ?? 0
+            Logger.info { "QA: stalling main for \(ms)ms" }
+            DispatchQueue.main.async { Thread.sleep(forTimeInterval: Double(ms) / 1000) }
             return noOutput
         }
         if rawValue.hasPrefix("--qa-mark=") {
@@ -132,7 +147,7 @@ class CliServer {
             App.showUi(shortcutIndex)
             return noOutput
         }
-        // The counterpart to `--show=`, for the QA harness. `--show=` opens the switcher WITHOUT making
+        // The counterpart to `--show=`, for automated runs. `--show=` opens the switcher WITHOUT making
         // AltTab the active app (no modifier is held, nothing activates us), and in that state Esc can
         // only arrive through the global cghid tap — the local monitor never sees it, because local
         // monitors only get events aimed at their own app. So a synthetic Esc is not a reliable way for
@@ -148,7 +163,7 @@ class CliServer {
     }
 
     /// Read-only snapshot of everything the switcher would decide, without showing the UI. Exists for the
-    /// automated QA harness: a live assertion oracle that costs one IPC round-trip instead of
+    /// automated runs: a live assertion oracle that costs one IPC round-trip instead of
     /// parsing debug logs or screenshotting tiles. Mutates nothing — `shown` is computed into a local, not
     /// written to `Window.shouldShowTheUser`, and the list is not sorted.
     private static func qaState() -> Codable {
@@ -219,6 +234,7 @@ class CliServer {
             visibleSpaceIds: visibleSpaceIds,
             allSpaces: Spaces.idsAndIndexes.map { QaSpace(id: $0.0, index: $0.1) },
             screens: qaScreens(),
+            missionControl: MissionControl.state().rawValue,
             switcherVisible: SwitcherSession.isActive,
             selectedIndex: SwitcherSession.current?.selectedIndex,
             heldWids: Array(Windows.windowsHeldVisibleForTab),
@@ -254,16 +270,30 @@ class CliServer {
             guard view.frame != .zero, let window = view.window_ else { return nil }
             let icons = view.statusIcons.icons
             let frame = view.frame
+            let badge = view.dockLabelIcon
             return QaTile(index: i, wid: window.cgWindowId, title: window.title,
                 app: window.application.runningApplication.localizedName,
                 minimizedIcon: icons[StatusIconsView.minimizedIdx].visible,
                 fullscreenIcon: icons[StatusIconsView.fullscreenIdx].visible,
                 appHiddenIcon: icons[StatusIconsView.hiddenIdx].visible,
                 spaceIcon: icons[StatusIconsView.spaceIdx].visible,
+                dockLabel: badge.isHidden ? nil : badge.text,
+                dockLabelAccessibility: badge.isHidden ? nil : badge.accessibilityLabel(),
+                thumbnailPixelSize: window.thumbnail?.size(),
+                expectedThumbnailPixelSize: expectedThumbnailPixelSize(window),
                 x: frame.origin.x, y: frame.origin.y, w: frame.size.width, h: frame.size.height,
                 thumbY: view.thumbnail.frame.origin.y, labelY: view.label.frame.origin.y,
                 row: window.rowIndex ?? -1)
         }
+    }
+
+    /// The pixel size a thumbnail capture of this window should measure right now, from the same
+    /// `capturePixelSize` the capture request is configured with. Reported next to the size the last
+    /// capture actually came back with, so a harness can judge the capture path without knowing the
+    /// thumbnail-scale arithmetic.
+    private static func expectedThumbnailPixelSize(_ window: Window) -> CGSize? {
+        guard let size = window.size else { return nil }
+        return WindowThumbnails.capturePixelSize(size, WindowThumbnails.captureScaleFactor(window), false)
     }
 
     /// The panel-wide numbers every tile is placed from. `labelHeight` is the one #6010 moved: it is meant
@@ -292,6 +322,10 @@ class CliServer {
         var visibleSpaceIds: [UInt64]
         var allSpaces: [QaSpace]
         var screens: [QaScreen]
+        /// What the app believes Mission Control, App Exposé or Show Desktop is doing, as the notification
+        /// name `MissionControlState` carries. Two decisions hang off it — whether the pre-show refresh is
+        /// skipped, and whether a pick may focus — and nothing else reports it.
+        var missionControl: String
         var switcherVisible: Bool
         var selectedIndex: Int?
         var heldWids: [CGWindowID]
@@ -321,6 +355,17 @@ class CliServer {
         var fullscreenIcon: Bool
         var appHiddenIcon: Bool
         var spaceIcon: Bool
+        /// The Dock badge as DRAWN on the tile, nil when the badge view is hidden. `dockLabelAccessibility`
+        /// is the VoiceOver text next to it, which differs for a numeric and a non-numeric label
+        /// (`TileView.getAccessibilityTextForBadge`).
+        var dockLabel: String?
+        var dockLabelAccessibility: String?
+        /// The pixel size of the window's last accepted capture (nil: never captured, so the tile shows the
+        /// app icon), and the size a capture should come back with now (nil: no window geometry). The
+        /// ScreenCaptureKit path is configured with the second, so the two differ by at most a pixel or two
+        /// when the capture path works.
+        var thumbnailPixelSize: CGSize?
+        var expectedThumbnailPixelSize: CGSize?
         /// **The laid-out geometry, so a test can judge the GRID and not just the list.** The tile's own
         /// frame moves when the row height is wrong (titles / appIcons styles), and the thumbnail's origin
         /// inside it moves when only the label metric is wrong (thumbnails style) — which is the shape of

@@ -61,8 +61,8 @@ class Window {
     var rowIndex: Int?
     var debugId: String!
     var lastSearchQuery: String?
-    var swAppResults: [SWResult] = []
-    var swTitleResults: [SWResult] = []
+    var swAppMatchSpan: Range<Int>?
+    var swTitleMatchSpan: Range<Int>?
     var swBestSimilarity = 0.0
 
     /// Forwards every `TrackedWindow` field by name — `window.title` resolves to the backing record,
@@ -146,20 +146,6 @@ class Window {
         lastSearchQuery = nil
     }
 
-    /// Update the WindowServer-owned facts (geometry, fullscreen) from a WS snapshot — the live path for
-    /// move/resize events. Title/subrole/tabs/minimized stay on the AX read: WS can't give them cleanly, and
-    /// minimized in particular can't be inferred from the WS ordered-out bit (which also fires for closing /
-    /// other-Space / app-hidden windows). Returns whether a filter-relevant field changed.
-    @discardableResult
-    func updateFromWindowServer(position: CGPoint, size: CGSize, isFullscreen: Bool) -> Bool {
-        let changed = self.position != position || self.size != size || self.isFullscreen != isFullscreen
-        self.position = position
-        self.size = size
-        self.isFullscreen = isFullscreen
-        self.isFullscreenMirrored = false
-        return changed
-    }
-
     /// DERIVED "phantom" verdict, computed at read time and never latched — so a window whose Space
     /// membership recovers shows again immediately. (It was a stored flag written monotonically on every
     /// show, which needed force-clears in three places and flapped with CGS enumeration timing, #5791.)
@@ -172,8 +158,8 @@ class Window {
     ///   a group is the `TabGroups` registry's decision, not phantom detection's;
     /// - otherwise `PhantomWindowDetector.syncVerdict` over the stored record: the strong signal (no Space
     ///   at all — Joplin / Sprig / `show:false` Electron) evaluated live, OR'd with the latched CGS verdict
-    ///   (`tracked.cgsPhantomLatch`, the only place the weak/alpha=0 case can come from — owned by
-    ///   `applyCgsPhantomVerdict`) — see #5714.
+    ///   (`tracked.cgsPhantomLatch`, the only place the weak/alpha=0 case can come from — set by
+    ///   `WindowEventReducer`) — see #5714.
     var isPhantom: Bool {
         if let wid = cgWindowId {
             if Windows.windowsHeldVisibleForTab.contains(wid) { return false }
@@ -189,20 +175,10 @@ class Window {
             isOrderedIn: self.isOrderedIn, alpha: self.alpha)
     }
 
-    /// The raw latched CGS verdict. Get-only on purpose: writing it must go through the two methods below,
-    /// which is what keeps the latch's clearing rules in one place. Never read this as the user-facing
-    /// phantom; that's the derived `isPhantom` above.
+    /// The raw latched CGS verdict. Get-only on purpose: the reducer sets it, and clearing goes through
+    /// `clearCgsPhantomLatch` below, which is what keeps the clearing rules in one place. Never read this
+    /// as the user-facing phantom; that's the derived `isPhantom` above.
     var cgsPhantomLatch: Bool { tracked.cgsPhantomLatch }
-
-    /// Store the authoritative CGS verdict (~250ms post-show, both signals — the only path that can SET the
-    /// weak/alpha=0 case). Returns whether the derived `isPhantom` changed, so callers skip a re-render when
-    /// it didn't (e.g. the verdict flipped on a group member, whose exemption absorbs it).
-    @discardableResult
-    func applyCgsPhantomVerdict(_ verdict: Bool) -> Bool {
-        let before = isPhantom
-        tracked.cgsPhantomLatch = verdict
-        return isPhantom != before
-    }
 
     /// Drop a latched CGS verdict. Used when Space membership recovers (a verdict taken mid-transition is
     /// stale — a weak-signal phantom never loses its Space, so it can't be wrongly cleared here) and when a
@@ -374,8 +350,11 @@ class Window {
         } else if self.isWindowlessApp || cgWindowId == nil {
             FocusIntents.shared.supersede()
             if let bundleUrl = application.bundleURL, self.isWindowlessApp {
-                if (try? NSWorkspace.shared.launchApplication(at: bundleUrl, configuration: [:])) == nil {
-                    application.runningApplication.activate(options: .activateAllWindows)
+                // `openApplication` reports its outcome on a background queue, so the fallback
+                // activation runs there. `NSRunningApplication.activate` is documented thread safe.
+                let runningApplication = application.runningApplication
+                NSWorkspace.shared.openApplication(at: bundleUrl, configuration: NSWorkspace.OpenConfiguration()) { app, _ in
+                    if app == nil { runningApplication.activate(options: .activateAllWindows) }
                 }
             } else {
                 application.runningApplication.activate(options: .activateAllWindows)
@@ -391,6 +370,14 @@ class Window {
             // and it goes stale after sleep/monitor changes until syncSpacesState re-queries). Treating unknown
             // as cross-Space ran SLSSpaceSetFrontPSN on the CURRENT Space, re-fronting the previous app and
             // undoing the raise while the window stayed key (#5586, the Slack-after-sleep variant).
+            // **Become the current intent BEFORE telling the model where we are going.** A stale operation
+            // finishing on the queue repairs to whatever `FocusIntents` calls current, so any gap between
+            // the two leaves it re-asserting the PREVIOUS target — after the model has already been told
+            // the new one. That is a switch the user then has to make twice: with targets alternating, the
+            // next alt-tab offers the window they just left. Measured on a 10-pair run (F-01, 2026-09-17):
+            // the announcement landed at 07.827, an operation from 642ms earlier finished 3ms later and
+            // re-fronted the previous window, and the pairs ended one window off.
+            let generation = FocusIntents.shared.request(wid: cgWindowId!, pid: application.pid)
             // AltTab knows exactly which window it is focusing — record it so the coming app activation
             // bumps this window directly instead of divining the focus from a racy 808 / AX read (#5596).
             WindowServerEvents.noteAltTabInitiatedFocus(cgWindowId!, application.pid)
@@ -398,7 +385,6 @@ class Window {
             let targetMaybeCrossSpace = !self.spaceIds.isEmpty && !self.spaceIds.contains(originSpaceId)
             let originFrontPid = targetMaybeCrossSpace
                 ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
-            let generation = FocusIntents.shared.request(wid: cgWindowId!, pid: application.pid)
             BackgroundWork.accessibilityCommandsQueue.addOperation { [weak self] in
                 self?.applyFocus(generation, originSpaceId, originFrontPid)
             }
@@ -431,7 +417,7 @@ class Window {
         }
         // Step 0 is the only step that blocks BEFORE this operation has touched the screen, so a supersede
         // caught here owes nothing. Counting the restore as a z-order move and repairing on this exit was
-        // tried and measured useless (2026-09-09, QA S-15): the re-front lands while macOS is still animating
+        // tried and measured useless (2026-09-09): the re-front lands while macOS is still animating
         // the window out of the Dock, and the restore draws over it afterwards. Nothing this operation can do
         // on its way out recalls a restore already in flight.
         guard FocusIntents.shared.mayProceed(generation) else { return }
@@ -499,6 +485,10 @@ class Window {
         GetProcessForPID(intent.pid, &psn)
         _SLPSSetFrontProcessWithOptions(&psn, intent.wid, SLPSMode.userGenerated.rawValue)
         makeKeyWindow(&psn, intent.wid)
+        // The one path that fronts a window nobody just asked for, so it says so: without this a repair is
+        // indistinguishable in the log from an ordinary switch, and reading one back out of a run took an
+        // elimination over every other emitter of that naming (F-01, 2026-09-17).
+        Logger.debug { "focus repair: re-asserting #\(intent.wid) over the late \(self.cgWindowId ?? 0)" }
         DispatchQueue.main.async {
             WindowServerEvents.noteAltTabInitiatedFocus(intent.wid, intent.pid)
         }

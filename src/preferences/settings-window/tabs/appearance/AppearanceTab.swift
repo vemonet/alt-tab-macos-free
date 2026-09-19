@@ -1,11 +1,5 @@
 import Cocoa
 
-/// An overlay view that lets clicks pass through to views behind it. Used for the Pro-lock ghost
-/// overlay on the `.auto` size segment so the underlying segmented control still receives the click.
-class NonHitTestingView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
 struct ShowHideRowInfo {
     var rowId: String!
     var uncheckedImage: String!
@@ -101,8 +95,10 @@ class IllustratedImageThemeView: ClickHoverImageView {
         ])
         placeholderLabel = placeholder
         highlight(false)
-        onClick = { (event, view) in
-            self.highlight(false)
+        // [weak self]: `onClick` is our own stored property, so a strong capture keeps this view alive
+        // forever, along with the decoded illustration `loadIllustration` works to keep reclaimable.
+        onClick = { [weak self] (event, view) in
+            self?.highlight(false)
         }
     }
 
@@ -372,20 +368,8 @@ class Popover: NSPopover {
             label.attributedStringValue = attributed
             return
         }
-        ranges.compactMap {
-            characterRangeToNSRange($0, in: currentMessage)
-        }.forEach {
-            attributed.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.5), range: $0)
-            attributed.addAttribute(.foregroundColor, value: NSColor(calibratedWhite: 0.12, alpha: 1), range: $0)
-        }
+        SettingsSearchHighlight.applyInlineHighlight(to: attributed, ranges: ranges, in: currentMessage)
         label.attributedStringValue = attributed
-    }
-
-    private func characterRangeToNSRange(_ range: Range<Int>, in text: String) -> NSRange? {
-        if range.lowerBound < 0 || range.upperBound > text.count || range.isEmpty { return nil }
-        let start = text.index(text.startIndex, offsetBy: range.lowerBound)
-        let end = text.index(text.startIndex, offsetBy: range.upperBound)
-        return NSRange(start..<end, in: text)
     }
 }
 
@@ -441,10 +425,7 @@ class AppearanceTab: NSObject {
     }
 
     static func cleanup() {
-        if let observer = proLockObserver {
-            NotificationCenter.default.removeObserver(observer)
-            proLockObserver = nil
-        }
+        NotificationCenter.default.removeObserver(&proLockObserver)
         // Don't call .close() — NSWindow's default `isReleasedWhenClosed = true` interacts
         // badly with our manual nil-out and causes double-release. ARC reclaims the sheet
         // when the static ref is nilled.
@@ -530,17 +511,8 @@ class AppearanceTab: NSObject {
         // `arrow.triangle.branch` rotated 180° — reads as "this value has branches going
         // downward to other shortcuts". Visually distinct from the chain-link unlink button.
         let image = NSImage.fromSymbol(.arrowTriangleBranch, pointSize: 14, rotated180: true)
-        let button = NSButton(image: image, target: self, action: #selector(overrideInfoClicked(_:)))
+        let button = LabelAndControl.makeOverrideSymbolButton(image, target: self, action: #selector(overrideInfoClicked(_:)))
         button.identifier = NSUserInterfaceItemIdentifier(overrideBaseName)
-        button.bezelStyle = .regularSquare
-        button.isBordered = false
-        if #available(macOS 10.14, *) {
-            button.contentTintColor = .controlAccentColor
-        }
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(equalToConstant: 20).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 20).isActive = true
-        button.isHidden = true
         overrideInfoIcons[overrideBaseName] = button
         return button
     }

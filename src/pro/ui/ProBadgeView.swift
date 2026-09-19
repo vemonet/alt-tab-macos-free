@@ -11,6 +11,7 @@ enum ProGradient {
     static let startPoint = CGPoint(x: 0.5 - 0.5 * 0.809, y: 0.5 - 0.5 * 0.588)
     static let endPoint = CGPoint(x: 0.5 + 0.5 * 0.809, y: 0.5 + 0.5 * 0.588)
     static let representativeColor = NSColor(red: 0xFF / 255.0, green: 0x44 / 255.0, blue: 0x88 / 255.0, alpha: 1)
+    private static let shineAnimationKey = "shine"
 
     static func makeLayer(alpha: CGFloat = 1, flipped: Bool = false) -> CAGradientLayer {
         let g = CAGradientLayer()
@@ -18,6 +19,34 @@ enum ProGradient {
         g.locations = locations
         setEndpoints(on: g, flipped: flipped)
         return g
+    }
+
+    /// A white highlight that sweeps once across `layer`, left to right, then removes itself. A
+    /// call landing while a sweep is still running is dropped: the running sweep's own sublayer is
+    /// the "already shining" flag, so no caller has to keep one.
+    static func playShine(over layer: CALayer) {
+        guard layer.sublayers?.contains(where: { $0.animation(forKey: shineAnimationKey) != nil }) != true else { return }
+        let size = layer.bounds.size
+        let shine = CAGradientLayer()
+        shine.colors = [
+            NSColor.white.withAlphaComponent(0).cgColor,
+            NSColor.white.withAlphaComponent(0.3).cgColor,
+            NSColor.white.withAlphaComponent(0).cgColor,
+        ]
+        shine.locations = [0, 0.5, 1]
+        shine.startPoint = CGPoint(x: 0, y: 0.5)
+        shine.endPoint = CGPoint(x: 1, y: 0.5)
+        shine.frame = CGRect(x: -size.width, y: 0, width: size.width, height: size.height)
+        layer.addSublayer(shine)
+        let animation = CABasicAnimation(keyPath: "position.x")
+        animation.fromValue = -size.width / 2
+        animation.toValue = size.width + size.width / 2
+        animation.duration = 0.6
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { shine.removeFromSuperlayer() }
+        shine.add(animation, forKey: shineAnimationKey)
+        CATransaction.commit()
     }
 
     static func setEndpoints(on layer: CAGradientLayer, flipped: Bool) {
@@ -28,10 +57,6 @@ enum ProGradient {
             layer.startPoint = startPoint
             layer.endPoint = endPoint
         }
-    }
-
-    static func makeProImage(font: NSFont) -> NSImage {
-        return makeGradientTextImage(ProBadgeView.proLabel, font: font)
     }
 
     static func makeGradientTextImage(_ string: String, font: NSFont) -> NSImage {
@@ -83,107 +108,6 @@ enum ProGradient {
         }
         return result
     }
-
-    /// Render the full `ProBadgeView` (gradient fill + gradient border + gradient "Pro" text) into
-    /// an `NSImage` so it can be used where only images are accepted — e.g. `NSMenuItem.image`, which
-    /// is what `NSPopUpButton` draws in its button face when the popup is closed.
-    static func makeFullProBadgeImage() -> NSImage {
-        let badge = ProBadgeView()
-        badge.setSelected(false)
-        let size = badge.fittingSize
-        badge.frame = NSRect(origin: .zero, size: size)
-        badge.layoutSubtreeIfNeeded()
-        return NSImage(size: size, flipped: false) { _ in
-            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            badge.layer?.render(in: ctx)
-            return true
-        }
-    }
-
-    static func drawGradientFill(in path: NSBezierPath, rect: NSRect, colorsOverride: [CGColor]? = nil) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        NSGraphicsContext.current?.saveGraphicsState()
-        path.addClip()
-        let cs = CGColorSpaceCreateDeviceRGB()
-        let used = colorsOverride ?? colors
-        if let gradient = CGGradient(colorsSpace: cs, colors: used as CFArray, locations: [0, 0.5, 1]) {
-            let start = CGPoint(x: rect.origin.x + rect.width * startPoint.x,
-                y: rect.origin.y + rect.height * startPoint.y)
-            let end = CGPoint(x: rect.origin.x + rect.width * endPoint.x,
-                y: rect.origin.y + rect.height * endPoint.y)
-            ctx.drawLinearGradient(gradient, start: start, end: end,
-                options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
-        }
-        NSGraphicsContext.current?.restoreGraphicsState()
-    }
-}
-
-/// Custom view for an `NSMenuItem` that shows a title alongside the full gradient `ProBadgeView`.
-/// Set as `NSMenuItem.view` so the menu row renders a real Pro pill instead of an inline gradient
-/// text attachment (which can't reproduce the bordered/filled badge look).
-class ProDropdownItemView: NSView {
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let badge = ProBadgeView()
-
-    init(title: String) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 1, height: 22))
-        autoresizingMask = [.width]
-        titleLabel.font = NSFont.systemFont(ofSize: 13)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.stringValue = title
-        titleLabel.backgroundColor = .clear
-        titleLabel.drawsBackground = false
-        addSubview(titleLabel)
-        addSubview(badge)
-        NSLayoutConstraint.activate([
-            // +3 over the 21pt "matches NSMenu checkmark gutter" estimate so this label's text
-            // baseline aligns with the other (system-drawn) dropdown items.
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            badge.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
-            badge.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 1),
-            badge.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("Class only supports programmatic initialization") }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        let highlighted = enclosingMenuItem?.isHighlighted ?? false
-        // macOS Big Sur+ draws menu-item highlights as a rounded rect with a small horizontal
-        // inset so they don't touch the menu's outer rounded corners. Match that inset.
-        let rect = bounds.insetBy(dx: 5, dy: 0)
-        let path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-        if highlighted {
-            // Use the system accent color rather than `.selectedMenuItemColor` — the latter can
-            // drift from the live accent on some macOS versions and appearance combos.
-            let highlightColor: NSColor
-            if #available(macOS 10.14, *) {
-                highlightColor = .controlAccentColor
-            } else {
-                highlightColor = .selectedMenuItemColor
-            }
-            highlightColor.setFill()
-            path.fill()
-            titleLabel.textColor = .selectedMenuItemTextColor
-            badge.setSelected(true)
-        } else {
-            titleLabel.textColor = .labelColor
-            badge.setSelected(false)
-        }
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        // Forward to the enclosing menu item: cancel tracking + perform the item's action so
-        // the popup-button's selection updates and its `onAction` fires.
-        if let menuItem = enclosingMenuItem, let menu = menuItem.menu {
-            menu.cancelTracking()
-            menu.performActionForItem(at: menu.index(of: menuItem))
-        } else {
-            super.mouseUp(with: event)
-        }
-    }
 }
 
 // Borderless button for actions we want to discourage: small, gray text, no underline.
@@ -206,7 +130,7 @@ class DynamicColorImageView: NSImageView {
     var colorProvider: (() -> NSColor)?
     override func viewWillDraw() {
         super.viewWillDraw()
-        if #available(macOS 10.14, *), let newColor = colorProvider?(), contentTintColor != newColor {
+        if let newColor = colorProvider?(), contentTintColor != newColor {
             contentTintColor = newColor
         }
     }
@@ -259,9 +183,7 @@ class ProBadgeView: NSView {
         let selected = segmentedControl.selectedSegment == segmentIndex
         segmentedControl.setLabel("", forSegment: segmentIndex)
         segmentedControl.setImage(nil, forSegment: segmentIndex)
-        if #available(macOS 10.13, *) {
-            segmentedControl.setToolTip(label, forSegment: segmentIndex)
-        }
+        segmentedControl.setToolTip(label, forSegment: segmentIndex)
         let segmentLeading = (0..<segmentIndex).reduce(CGFloat(0)) { $0 + segmentedControl.width(forSegment: $1) }
         let colorProvider = segmentColorProvider(for: segmentedControl, segmentIndex: segmentIndex)
         let iconView = DynamicColorImageView()
@@ -270,7 +192,7 @@ class ProBadgeView: NSView {
         // Rendered from our bundled font subset; `isTemplate = true` (set by NSImage.fromSymbol)
         // makes AppKit apply `contentTintColor`. Mirrors the sibling segments' native rendering.
         iconView.image = NSImage.fromSymbol(symbol, pointSize: 13)
-        if #available(macOS 10.14, *) { iconView.contentTintColor = colorProvider() }
+        iconView.contentTintColor = colorProvider()
         iconView.setContentHuggingPriority(.required, for: .horizontal)
         iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
         let textLabel = DynamicColorTextField(labelWithString: label)
@@ -387,29 +309,21 @@ class ProBadgeView: NSView {
 
     override func layout() {
         super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        let b = bounds
-        fillGradient.frame = b
-        borderGradient.frame = b
-        borderMask.frame = b
-        borderMask.path = CGPath(roundedRect: b.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
-        textGradient.frame = b
-        let labelFrame = label.frame
-        textMask.frame = labelFrame.isEmpty ? b : labelFrame
-        CATransaction.commit()
+        caTransaction {
+            let b = bounds
+            fillGradient.frame = b
+            borderGradient.frame = b
+            borderMask.frame = b
+            borderMask.path = CGPath(roundedRect: b.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
+            textGradient.frame = b
+            let labelFrame = label.frame
+            textMask.frame = labelFrame.isEmpty ? b : labelFrame
+        }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
-        windowObservers.removeAll()
-        guard let window else { return }
-        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
-            windowObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                self?.updateColors()
-            })
-        }
+        windowObservers = observeWindowKeyChanges(replacing: windowObservers) { [weak self] in self?.updateColors() }
         // Resync colors + force a layout pass for the current key state. This matters when the
         // badge is built lazily (e.g. the per-shortcut Appearance pane's `Size` Pro segment,
         // created when the user clicks the Appearance tab while Settings is already key) —
@@ -432,27 +346,26 @@ class ProBadgeView: NSView {
 
     private func updateColors() {
         onWindowKeyChanged?()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        if isSelectedState && isWindowKey {
-            let white = NSColor.white
-            layer?.borderWidth = 1
-            layer?.borderColor = white.withAlphaComponent(0.5).cgColor
-            layer?.backgroundColor = white.withAlphaComponent(0.15).cgColor
-            fillGradient.isHidden = true
-            borderGradient.isHidden = true
-            textGradient.isHidden = true
-            label.textColor = white.withAlphaComponent(0.97)
-            label.alphaValue = 1
-        } else {
-            layer?.borderWidth = 0
-            layer?.borderColor = nil
-            layer?.backgroundColor = nil
-            fillGradient.isHidden = false
-            borderGradient.isHidden = false
-            textGradient.isHidden = false
-            label.alphaValue = 0
+        caTransaction {
+            if isSelectedState && isWindowKey {
+                let white = NSColor.white
+                layer?.borderWidth = 1
+                layer?.borderColor = white.withAlphaComponent(0.5).cgColor
+                layer?.backgroundColor = white.withAlphaComponent(0.15).cgColor
+                fillGradient.isHidden = true
+                borderGradient.isHidden = true
+                textGradient.isHidden = true
+                label.textColor = white.withAlphaComponent(0.97)
+                label.alphaValue = 1
+            } else {
+                layer?.borderWidth = 0
+                layer?.borderColor = nil
+                layer?.backgroundColor = nil
+                fillGradient.isHidden = false
+                borderGradient.isHidden = false
+                textGradient.isHidden = false
+                label.alphaValue = 0
+            }
         }
-        CATransaction.commit()
     }
 }

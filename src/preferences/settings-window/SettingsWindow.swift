@@ -124,18 +124,32 @@ private final class SettingsSidebarCellView: NSTableCellView {
         let selected = backgroundStyle == .emphasized
         titleLabel.font = NSFont.systemFont(ofSize: 13.5, weight: .medium)
         titleLabel.textColor = selected ? .white : .labelColor
-        if #available(macOS 10.14, *) {
-            iconView.contentTintColor = selected ? .white : .secondaryLabelColor
-        }
+        iconView.contentTintColor = selected ? .white : .secondaryLabelColor
     }
 }
 
 final class UpgradeButton: ProGradientButton {
+    private static let mainFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
+    private static let secondaryAttributes: [NSAttributedString.Key: Any] = [
+        .foregroundColor: NSColor.white.withAlphaComponent(0.8),
+        .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+    ]
+    private static let emailMaxLines = 3
+    private static let emailMinFontSize = CGFloat(11.5)
+    /// `NSButton` gives its title no side padding, so without this the email would run into the
+    /// pill's rounded corners.
+    private static let titleHorizontalInset = CGFloat(6)
+    private static let oneLineHeight = CGFloat(24)
+    /// The secondary line plus one line of `mainFont`.
+    private static let twoLineHeight = CGFloat(35)
+
     private var heightConstraint: NSLayoutConstraint!
+    /// Width the title was last wrapped for, so `layout` only re-wraps when the sidebar resizes.
+    private var wrappedWidth = CGFloat(0)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        heightConstraint = heightAnchor.constraint(equalToConstant: 24)
+        heightConstraint = heightAnchor.constraint(equalToConstant: Self.oneLineHeight)
         heightConstraint.isActive = true
         refreshTitle()
     }
@@ -146,71 +160,79 @@ final class UpgradeButton: ProGradientButton {
 
     override func layout() {
         super.layout()
-        refreshEmailTooltip()
+        guard bounds.width != wrappedWidth else { return }
+        refreshTitle()
     }
 
     func refreshTitle() {
-        let result = NSMutableAttributedString()
-        let mainAttrs: [NSAttributedString.Key: Any] = [
-            .foregroundColor: NSColor.white,
-            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-        ]
-        let secondaryAttrs: [NSAttributedString.Key: Any] = [
-            .foregroundColor: NSColor.white.withAlphaComponent(0.8),
-            .font: NSFont.systemFont(ofSize: 11, weight: .regular),
-        ]
+        wrappedWidth = bounds.width
         let state = LicenseManager.shared.state
-        if case .pro = state {
-            let title = LicenseManager.shared.isLifetimeVariant
-                ? NSLocalizedString("Pro Lifetime activated", comment: "")
-                : NSLocalizedString("Pro activated", comment: "")
-            if let email = LicenseManager.shared.customerEmail {
-                result.append(NSAttributedString(string: title, attributes: secondaryAttrs))
-                result.append(NSAttributedString(string: "\n", attributes: secondaryAttrs))
-                result.append(NSAttributedString(string: email, attributes: mainAttrs))
-            } else {
-                result.append(NSAttributedString(string: title, attributes: mainAttrs))
-            }
-        } else {
-            let subtitleText: String
-            if case .trial(let daysRemaining) = state {
-                subtitleText = String(format: NSLocalizedString("Trial: %d days remaining", comment: ""), daysRemaining)
-            } else if case .proExpired = state {
-                subtitleText = NSLocalizedString("License doesn't cover this version", comment: "")
-            } else {
-                subtitleText = NSLocalizedString("Trial expired", comment: "")
-            }
-            result.append(NSAttributedString(string: subtitleText, attributes: secondaryAttrs))
-            result.append(NSAttributedString(string: "\n", attributes: secondaryAttrs))
-            result.append(NSAttributedString(string: NSLocalizedString("Get Pro", comment: ""), attributes: mainAttrs))
+        guard case .pro = state else {
+            toolTip = nil
+            applyTitle(secondary: trialSubtitle(state), main: Self.attributed(NSLocalizedString("Get Pro", comment: ""), Self.mainFont), height: Self.twoLineHeight)
+            return
         }
+        let title = LicenseManager.shared.isLifetimeVariant
+            ? NSLocalizedString("Pro Lifetime activated", comment: "")
+            : NSLocalizedString("Pro activated", comment: "")
+        guard let email = LicenseManager.shared.customerEmail else {
+            toolTip = nil
+            applyTitle(secondary: nil, main: Self.attributed(title, Self.mainFont), height: Self.oneLineHeight)
+            return
+        }
+        setEmailTitle(title, email)
+    }
+
+    /// The email is often the customer's name, so it keeps the big font and grows the button over up
+    /// to 3 lines instead of shrinking; past that the tail is dropped and the tooltip carries the
+    /// full address.
+    private func setEmailTitle(_ title: String, _ email: String) {
+        let width = availableTitleWidth
+        let font = EmailLineWrap.fittedFont(email, baseFont: Self.mainFont, maxWidth: width, minSize: Self.emailMinFontSize, maxLines: Self.emailMaxLines)
+        let wrapped = EmailLineWrap.wrap(email, font: font, maxWidth: width, maxLines: Self.emailMaxLines)
+        toolTip = wrapped.isTruncated ? email : nil
+        applyTitle(secondary: title, main: Self.attributed(wrapped.lines.joined(separator: "\n"), font),
+            height: Self.twoLineHeight + CGFloat(wrapped.lines.count - 1) * Self.lineHeight(font))
+    }
+
+    private func applyTitle(secondary: String?, main: NSAttributedString, height: CGFloat) {
+        let result = NSMutableAttributedString()
+        if let secondary = secondary {
+            result.append(NSAttributedString(string: secondary + "\n", attributes: Self.secondaryAttributes))
+        }
+        result.append(main)
         let style = NSMutableParagraphStyle()
         style.alignment = .center
         style.lineBreakMode = .byTruncatingTail
         result.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: result.length))
         attributedTitle = result
-        if #available(macOS 10.14, *) {
-            contentTintColor = .white
-        }
-        let hasSecondLine: Bool
-        if case .pro = state, LicenseManager.shared.customerEmail == nil {
-            hasSecondLine = false
-        } else {
-            hasSecondLine = true
-        }
-        heightConstraint.constant = hasSecondLine ? 35 : 24
-        refreshEmailTooltip()
+        contentTintColor = .white
+        heightConstraint.constant = height
     }
 
-    private func refreshEmailTooltip() {
-        guard case .pro = LicenseManager.shared.state,
-              let email = LicenseManager.shared.customerEmail else {
-            toolTip = nil
-            return
+    private func trialSubtitle(_ state: LicenseState) -> String {
+        if case .trial(let daysRemaining) = state {
+            return String(format: NSLocalizedString("Trial: %d days remaining", comment: ""), daysRemaining)
         }
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)]
-        let emailWidth = (email as NSString).size(withAttributes: attrs).width
-        toolTip = emailWidth > bounds.width ? email : nil
+        if case .proExpired = state {
+            return NSLocalizedString("License doesn't cover this version", comment: "")
+        }
+        return NSLocalizedString("Trial expired", comment: "")
+    }
+
+    /// Before the first layout there is no width to measure, so fall back to the sidebar geometry
+    /// the button's own constraints will give it.
+    private var availableTitleWidth: CGFloat {
+        let pillWidth = bounds.width > 0 ? bounds.width : SettingsWindow.sidebarWidth - 2 * SettingsWindow.sidebarHorizontalPadding
+        return pillWidth - 2 * Self.titleHorizontalInset
+    }
+
+    private static func attributed(_ text: String, _ font: NSFont) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [.foregroundColor: NSColor.white, .font: font])
+    }
+
+    private static func lineHeight(_ font: NSFont) -> CGFloat {
+        ceil(font.ascender - font.descender + font.leading)
     }
 }
 
@@ -243,18 +265,12 @@ private final class SidebarSearchField: NSSearchField {
 
 class SettingsWindow: NSWindow {
     static let contentWidth = CGFloat(710)
-    static let width = contentWidth
     /// Horizontal margin inside each section between the section's container and the
     /// TableGroupView's rounded background, so the gray-bg blocks "float" inside the section
     /// rather than extend edge-to-edge. The window width includes 2× this on top of the regular
     /// `contentWidth`, so TGVs keep their natural width and gain a visible gutter on each side.
     static let sectionContentHorizontalMargin = CGFloat(15)
-    static let sidebarActionButtonHeight: CGFloat = {
-        let button = NSButton(title: " ", target: nil, action: nil)
-        button.bezelStyle = .rounded
-        return button.fittingSize.height
-    }()
-    private static let sidebarWidth = CGFloat(175)
+    static let sidebarWidth = CGFloat(175)
     /// Outer left pad between the splitview divider and the TableGroupView background. Kept
     /// symmetric with `contentTrailingPadding` so the visible TGV "shoulders" match on both sides.
     private static let contentHorizontalPadding = CGFloat(5)
@@ -276,7 +292,7 @@ class SettingsWindow: NSWindow {
     private static let minWindowHeight = CGFloat(400)
     private static let defaultWindowHeight = CGFloat(570)
     private static let sidebarTopInset = CGFloat(40)
-    private static let sidebarHorizontalPadding = CGFloat(10)
+    static let sidebarHorizontalPadding = CGFloat(10)
     /// Padding inside the row's cell view between the cell's leading edge and the icon.
     /// `NSTableView.style = .sourceList` already inserts the cell content into its rounded
     /// highlight pill, so we only add a small visual breathing-room here.
@@ -288,8 +304,7 @@ class SettingsWindow: NSWindow {
     private static let controlHighlightMaxCornerRadius = CGFloat(9)
     static var shared: SettingsWindow!
 
-    static var canBecomeKey_ = true
-    override var canBecomeKey: Bool { Self.canBecomeKey_ }
+    override var canBecomeKey: Bool { SecondaryWindows.canBecomeKey }
 
     private let splitViewController = NSSplitViewController()
     private let sidebarContainer = NSView()
@@ -358,10 +373,8 @@ class SettingsWindow: NSWindow {
         let toolbar = NSToolbar(identifier: "SettingsToolbar")
         toolbar.showsBaselineSeparator = false
         self.toolbar = toolbar
-        if #available(macOS 11.0, *) {
-            toolbarStyle = .unified
-            titlebarSeparatorStyle = .none
-        }
+        toolbarStyle = .unified
+        titlebarSeparatorStyle = .none
     }
 
     private func setupView() {
@@ -410,9 +423,7 @@ class SettingsWindow: NSWindow {
         rightScrollView.hasVerticalScroller = true
         rightScrollView.hasHorizontalScroller = false
         rightScrollView.scrollerStyle = .overlay
-        if #available(macOS 11.0, *) {
-            rightScrollView.automaticallyAdjustsContentInsets = false
-        }
+        rightScrollView.automaticallyAdjustsContentInsets = false
         rightScrollView.contentInsets = NSEdgeInsetsZero
         rightScrollView.scrollerInsets = NSEdgeInsetsZero
         rightScrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -457,15 +468,7 @@ class SettingsWindow: NSWindow {
 
     private func setupSearchField(_ parent: NSView) {
         searchField.delegate = self
-        searchField.placeholderString = NSLocalizedString("Search", comment: "")
-        searchField.sendsSearchStringImmediately = true
-        searchField.sendsWholeSearchString = true
-        searchField.bezelStyle = .roundedBezel
-        if #available(macOS 26.0, *) {
-            searchField.controlSize = .extraLarge
-        } else if #available(macOS 13.0, *) {
-            searchField.controlSize = .large
-        }
+        searchField.applySearchStyle()
         searchField.translatesAutoresizingMaskIntoConstraints = false
         parent.addSubview(searchField)
         NSLayoutConstraint.activate([
@@ -483,13 +486,10 @@ class SettingsWindow: NSWindow {
         sidebarTableView.headerView = nil
         sidebarTableView.intercellSpacing = NSSize(width: 0, height: 2)
         sidebarTableView.rowHeight = 30
-        sidebarTableView.selectionHighlightStyle = .sourceList
         sidebarTableView.backgroundColor = .clear
         sidebarTableView.focusRingType = .none
         sidebarTableView.usesAlternatingRowBackgroundColors = false
-        if #available(macOS 11.0, *) {
-            sidebarTableView.style = .sourceList
-        }
+        sidebarTableView.style = .sourceList
         sidebarTableView.delegate = self
         sidebarTableView.dataSource = self
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(rawValue: "SettingsSidebarColumn"))
@@ -811,39 +811,6 @@ class SettingsWindow: NSWindow {
         })
     }
 
-    /// True iff any user-visible text in the view subtree matches `query`. Walks the same set of
-    /// view types as `collectSearchContent` (text fields, popups, segmented controls, buttons,
-    /// info popovers, text views) so the match semantics are consistent.
-    private static func subtreeContainsMatch(_ view: NSView, query: String) -> Bool {
-        if let tf = view as? NSTextField {
-            let s = SettingsWindow.trimmedText(tf.stringValue)
-            if !s.isEmpty, SettingsSearch.match(query, in: s) != nil { return true }
-        } else if let pop = view as? NSPopUpButton {
-            let title = SettingsWindow.trimmedText(pop.title)
-            if !title.isEmpty, SettingsSearch.match(query, in: title) != nil { return true }
-            for item in pop.itemTitles {
-                let s = SettingsWindow.trimmedText(item)
-                if !s.isEmpty, SettingsSearch.match(query, in: s) != nil { return true }
-            }
-        } else if let seg = view as? NSSegmentedControl {
-            for i in 0..<seg.segmentCount {
-                let s = SettingsWindow.trimmedText(seg.label(forSegment: i) ?? "")
-                if !s.isEmpty, SettingsSearch.match(query, in: s) != nil { return true }
-            }
-        } else if let btn = view as? NSButton {
-            let s = SettingsWindow.trimmedText(btn.title)
-            if !s.isEmpty, SettingsSearch.match(query, in: s) != nil { return true }
-        } else if let infoButton = view as? ClickHoverImageView {
-            for s in SettingsWindow.searchStrings(infoButton) {
-                if SettingsSearch.match(query, in: s) != nil { return true }
-            }
-        } else if let textView = view as? NSTextView {
-            let s = SettingsWindow.trimmedText(textView.string)
-            if !s.isEmpty, SettingsSearch.match(query, in: s) != nil { return true }
-        }
-        return view.subviews.contains { subtreeContainsMatch($0, query: query) }
-    }
-
     static func highlightTarget(_ infoButton: ClickHoverImageView) -> SettingsSearchHighlightTarget? {
         controlHighlightTarget(infoButton) {
             SettingsWindow.searchStrings(infoButton)
@@ -943,14 +910,6 @@ class SettingsWindow: NSWindow {
         appendTrimmed(popUpButton.title, &values)
         popUpButton.itemTitles.forEach {
             appendTrimmed($0, &values)
-        }
-        return Array(Set(values))
-    }
-
-    private static func searchStrings(_ segmentedControl: NSSegmentedControl) -> [String] {
-        var values = [String]()
-        (0..<segmentedControl.segmentCount).forEach {
-            appendTrimmed(segmentedControl.label(forSegment: $0) ?? "", &values)
         }
         return Array(Set(values))
     }
@@ -1072,6 +1031,7 @@ class SettingsWindow: NSWindow {
         targets.forEach { $0.clear() }
     }
 
+    // periphery:ignore:parameters notification - NotificationCenter selector signature
     @objc private func contentViewBoundsDidChange(_ notification: Notification) {
         guard !isShowingUpgradeView else { return }
         let currentY = rightScrollView.contentView.bounds.minY

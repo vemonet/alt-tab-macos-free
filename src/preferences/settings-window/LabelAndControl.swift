@@ -3,7 +3,6 @@ import ShortcutRecorder
 
 enum LabelPosition {
     case leftWithSeparator
-    case leftWithoutSeparator
     case right
 }
 
@@ -61,15 +60,7 @@ class ClickHoverImageView: MouseHoverView {
 }
 
 class LabelAndControl: NSObject {
-    // periphery:ignore
-    static func makeLabelWithImageRadioButtons(_ labelText: String,
-                                               _ rawName: String,
-                                               _ macroPreferences: [ImageMacroPreference],
-                                               extraAction: ActionClosure? = nil,
-                                               buttonSpacing: CGFloat = 15) -> [NSView] {
-        let view = makeImageRadioButtons(rawName, macroPreferences, extraAction: extraAction, buttonSpacing: buttonSpacing)
-        return [makeLabel(labelText), view]
-    }
+    private static let overrideSymbolButtonSize = CGFloat(20)
 
     static func makeImageRadioButtons(_ rawName: String,
                                       _ macroPreferences: [ImageMacroPreference],
@@ -137,13 +128,19 @@ class LabelAndControl: NSObject {
         return button
     }
 
-    // periphery:ignore
-    static func makeCheckbox(_ rawName: String, extraAction: ActionClosure? = nil) -> NSButton {
-        let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
-        checkbox.translatesAutoresizingMaskIntoConstraints = false
-        checkbox.state = CachedUserDefaults.bool(rawName) ? .on : .off
-        _ = setupControl(checkbox, rawName, extraAction: extraAction)
-        return checkbox
+    /// The small accent-tinted symbol button used by the per-shortcut override affordances: the
+    /// "this value has overrides" branch icon and the "sync with global value" unlink icon. Starts
+    /// hidden, since both only show up on rows that actually have an override.
+    static func makeOverrideSymbolButton(_ image: NSImage, target: AnyObject? = nil, action: Selector? = nil) -> NSButton {
+        let button = NSButton(image: image, target: target, action: action)
+        button.bezelStyle = .regularSquare
+        button.isBordered = false
+        button.contentTintColor = .controlAccentColor
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.widthAnchor.constraint(equalToConstant: overrideSymbolButtonSize).isActive = true
+        button.heightAnchor.constraint(equalToConstant: overrideSymbolButtonSize).isActive = true
+        button.isHidden = true
+        return button
     }
 
     static func makeInfoButton(size: CGFloat = 16,
@@ -173,42 +170,6 @@ class LabelAndControl: NSObject {
         return view
     }
 
-    // periphery:ignore
-    static func makeLabelWithCheckboxAndInfoButton(_ labelText: String,
-                                                   _ rawName: String,
-                                                   extraAction: ActionClosure? = nil,
-                                                   labelPosition: LabelPosition = .leftWithSeparator,
-                                                   onClick: EventClosure? = nil,
-                                                   onMouseEntered: EventClosure? = nil,
-                                                   onMouseExited: EventClosure? = nil,
-                                                   size: CGFloat = 15) -> [NSView] {
-        let labelCheckboxViews = makeLabelWithCheckbox(labelText, rawName, extraAction: extraAction, labelPosition: labelPosition)
-        let infoButtonView = makeInfoButton(size: size, onClick: onClick, onMouseEntered: onMouseEntered, onMouseExited: onMouseExited)
-        var views: [NSView] = []
-        labelCheckboxViews.forEach { view in
-            views.append(view)
-        }
-        views.append(infoButtonView)
-        let hStack = NSStackView(views: views)
-        hStack.orientation = .horizontal
-        hStack.spacing = 8
-        hStack.alignment = .centerY
-        hStack.translatesAutoresizingMaskIntoConstraints = false
-        return [hStack]
-    }
-
-    // periphery:ignore
-    static func makeTextArea(_ nCharactersWide: CGFloat, _ nLinesHigh: Int, _ placeholder: String, _ rawName: String, extraAction: ActionClosure? = nil) -> [NSView] {
-        let textArea = TextArea(nCharactersWide, nLinesHigh, placeholder)
-        textArea.callback = {
-            controlWasChanged(textArea, nil)
-            extraAction?(textArea)
-        }
-        textArea.identifier = NSUserInterfaceItemIdentifier(rawName)
-        textArea.stringValue = CachedUserDefaults.string(rawName)
-        return [textArea]
-    }
-
     static func dropdown_(_ rawName: String, _ macroPreferences: [MacroPreference]) -> NSPopUpButton {
         let popUp = PopupButtonLikeSystemSettings()
         popUp.addItems(withTitles: macroPreferences.map {
@@ -223,22 +184,6 @@ class LabelAndControl: NSObject {
         SettingsSearchIndex.registerStrings(macroPreferences.map { $0.localizedString })
         SettingsSearchIndex.registerTarget(SettingsWindow.highlightTarget(dropdown))
         return setupControl(dropdown, rawName, extraAction: extraAction) as! NSPopUpButton
-    }
-
-    // periphery:ignore
-    static func makeLabelWithRadioButtons(_ labelText: String,
-                                          _ rawName: String,
-                                          _ values: [MacroPreference],
-                                          extraAction: ActionClosure? = nil,
-                                          buttonSpacing: CGFloat = 30) -> [NSView] {
-        let buttons = makeRadioButtons(rawName, values, extraAction: extraAction)
-        let horizontalStackView = NSStackView(views: buttons)
-        horizontalStackView.translatesAutoresizingMaskIntoConstraints = false
-        horizontalStackView.orientation = .horizontal
-        horizontalStackView.spacing = buttonSpacing
-        horizontalStackView.alignment = .centerY
-        horizontalStackView.translatesAutoresizingMaskIntoConstraints = false
-        return [makeLabel(labelText), horizontalStackView]
     }
 
     static func makeRadioButtons(_ rawName: String, _ macroPreferences: [MacroPreference], extraAction: ActionClosure? = nil) -> [NSButton] {
@@ -261,7 +206,6 @@ class LabelAndControl: NSObject {
         button.translatesAutoresizingMaskIntoConstraints = false
         SettingsSearchIndex.registerStrings(macroPreferences.map { $0.localizedString })
         SettingsSearchIndex.registerTarget(SettingsWindow.highlightTarget(button))
-        applySystemSelectedSegmentStyle(button)
         for (i, preference) in macroPreferences.enumerated() {
             if segmentWidth > 0 {
                 button.setWidth(segmentWidth, forSegment: i)
@@ -286,21 +230,13 @@ class LabelAndControl: NSObject {
                 let textWidth = (label as NSString).size(withAttributes: [.font: button.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)]).width
                 let imageWidth: CGFloat = hasImage ? 16 + 4 : 0
                 let availableTextWidth = segmentWidth - 12 - imageWidth
-                if textWidth > availableTextWidth, #available(macOS 10.13, *) {
+                if textWidth > availableTextWidth {
                     button.setToolTip(label, forSegment: i)
                 }
             }
             _ = setupControl(button, rawName, String(i), extraAction: extraAction)
         }
         return button
-    }
-
-    static func applySystemSelectedSegmentStyle(_ control: NSSegmentedControl) {
-        if #available(macOS 10.14, *) {
-            control.segmentStyle = .automatic
-        } else {
-            control.segmentStyle = .texturedRounded
-        }
     }
 
     static func makeLabelWithSlider(_ labelText: String, _ rawName: String, _ minValue: Double, _ maxValue: Double,
@@ -406,12 +342,6 @@ class LabelAndControl: NSObject {
                 return ((control as! NSButton).state == NSButton.StateValue.on) ? controlId : nil
             } else {
                 return String((control as! NSButton).state == NSButton.StateValue.on)
-            }
-        } else if control is Switch {
-            if let controlId {
-                return ((control as! Switch).state == NSButton.StateValue.on) ? controlId : nil
-            } else {
-                return String((control as! Switch).state == NSButton.StateValue.on)
             }
         } else if control is NSSegmentedControl {
             return String((control as! NSSegmentedControl).selectedSegment)

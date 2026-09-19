@@ -111,7 +111,7 @@ final class TestReducerRunnerTests: XCTestCase {
         XCTAssertEqual(TestReducerRunner(initial: s).violations, [])
     }
 
-    /// Live QA (2026-08-02): "Move Tab to New Window", then the group re-forms around the two members that
+    /// Measured live (2026-08-02): "Move Tab to New Window", then the group re-forms around the two members that
     /// stayed. The exact-set form ungroups the window the user tore out, and ungrouping used to STRIP the
     /// Space the group had lent it. An empty `spaceIds` is the strong phantom signal — "CGS places this
     /// window nowhere" — so we asserted that about a window CGS had had on Space 3 the whole time, and its
@@ -300,7 +300,7 @@ final class TestReducerRunnerTests: XCTestCase {
         }, "merged two windows via the time-based pairing: \(harness.trace)")
     }
 
-    /// Reported live (2026-07-22 QA): on a FULLSCREEN Finder window, switching the visible tab to "Movies"
+    /// Reported live (2026-07-22): on a FULLSCREEN Finder window, switching the visible tab to "Movies"
     /// then immediately opening the switcher showed the PREVIOUS tab; closing and reopening fixed it. A
     /// fullscreen switch to a REUSED background wid reaches physical discovery with no promotion attached —
     /// no 808, no create, and (the wid untracked at its Space-join) no `pendingFocusPromotion` — so the
@@ -406,6 +406,113 @@ final class TestReducerRunnerTests: XCTestCase {
             reconcileTabs: true, changedSoFar: false))])
         XCTAssertEqual(harness.state.window(20)?.tabGroupObservation, .standalone)
         XCTAssertEqual(harness.state.window(20)?.tabCount, 0)
+    }
+
+    private func activeTabTornIntoWindowState() -> TrackedWindowState {
+        let size = CGSize(width: 920, height: 436)
+        var escaped = window(20, title: "Escaped", size: size, position: CGPoint(x: 550, y: 520),
+                             spaceIds: [3], lastFocusOrder: 0)
+        var remaining = window(21, title: "Remaining", size: size, position: CGPoint(x: 507, y: 456),
+                               spaceIds: [3], lastFocusOrder: 1)
+        var background = window(22, title: "Background", size: size, position: CGPoint(x: 507, y: 456),
+                                spaceIds: [3], spaceIsBorrowed: true, lastFocusOrder: 2)
+        escaped.tabCount = 3
+        remaining.tabCount = 3
+        background.tabCount = 3
+        escaped.isOrderedIn = true
+        escaped.spaceMembershipObservation = .known([3])
+        remaining.isOrderedIn = true
+        remaining.spaceMembershipObservation = .known([3])
+        let observation = TabGroupObservation.group(titles: ["Escaped", "Remaining", "Background"], token: 42)
+        escaped.tabGroupObservation = observation
+        remaining.tabGroupObservation = observation
+        background.tabGroupObservation = observation
+        var s = state(windows: [escaped, remaining, background])
+        s.formGroup([20, 21, 22], representative: 20, reason: "fixture")
+        // Until the split verdict, the second ordered-in member is the sanctioned drag-out transition.
+        s.held.insert(21)
+        return s
+    }
+
+    /// T-06 live shape: dragging the selected Finder tab out leaves TWO ordered-in windows on the same
+    /// Space. The selected wid reports a completed standalone AX read, but the old nil policy retained its
+    /// three-member group forever. Two settled, distinct frames confirm that this is not a transient tab
+    /// switch, so the escaped window must regain its own tile.
+    func testStandaloneActiveTabAtASecondPhysicalFrameLeavesItsOldGroup() {
+        let harness = TestReducerRunner(initial: activeTabTornIntoWindowState())
+        harness.run([
+            .input(.titleAndTabsRead(wid: 20, tabGroup: .standalone,
+                                     reconcileTabs: true, changedSoFar: false)),
+            .input(.standaloneTabCheck(wid: 20, siblingWid: 21, attempt: 0)),
+            .input(.standaloneTabCheck(wid: 20, siblingWid: 21, attempt: 1)),
+        ])
+        XCTAssertEqual(harness.violations, [], "convergence: \(harness.trace)")
+        XCTAssertNil(harness.state.groups.groupId(of: 20), "the torn-out window needs its own tile")
+        XCTAssertEqual(harness.state.groups.siblingWids(of: 21)?.sorted(), [21, 22])
+        XCTAssertEqual(harness.state.window(20)?.tabCount, 0)
+        XCTAssertTrue(harness.trace.contains { $0.contains("standalone split confirmed #20") })
+    }
+
+    /// The same tear-out, from the state a real one is actually in (captured live, T-06 2026-09-17). Two
+    /// facts the fixture above did not have, each of which alone kept the group whole:
+    /// - the escaped tab was DISPLACED before it was dragged out, so the read that followed the
+    ///   displacement already recorded it standalone (only the selected tab exposes a tab bar), and the
+    ///   read reporting the tear-out is therefore not a group→standalone edge;
+    /// - it still wears `spaceIsBorrowed`, because every pass that keeps a group coherent re-applies that
+    ///   annotation to the members, while CGS places the window on a Space in its own right.
+    func testStandaloneAnswerSplitsEvenWhenTheWindowWasAlreadyRecordedStandalone() {
+        var initial = activeTabTornIntoWindowState()
+        if let i = initial.windowIndex(20) {
+            initial.windows[i].tabGroupObservation = .standalone
+            initial.windows[i].spaceIsBorrowed = true
+        }
+        let harness = TestReducerRunner(initial: initial)
+        harness.run([
+            .input(.titleAndTabsRead(wid: 20, tabGroup: .standalone,
+                                     reconcileTabs: true, changedSoFar: false)),
+            .input(.standaloneTabCheck(wid: 20, siblingWid: 21, attempt: 0)),
+            .input(.standaloneTabCheck(wid: 20, siblingWid: 21, attempt: 1)),
+        ])
+        XCTAssertEqual(harness.violations, [], "convergence: \(harness.trace)")
+        // The arming is the half the old gates suppressed, so it is asserted on its own: the two timer
+        // inputs below are hand-fed and would split the group whether or not anything armed them.
+        XCTAssertTrue(harness.trace.contains { $0.contains("standalone #20 peer=#21") })
+        XCTAssertNil(harness.state.groups.groupId(of: 20), "the torn-out window needs its own tile")
+        XCTAssertEqual(harness.state.groups.siblingWids(of: 21)?.sorted(), [21, 22])
+        XCTAssertTrue(harness.trace.contains { $0.contains("standalone split confirmed #20") })
+    }
+
+    /// An INACTIVE tab answers standalone on every read and must never arm the split: it is ordered out,
+    /// which is the physical fact that separates it from a window that escaped its group.
+    func testStandaloneAnswerFromAnOrderedOutTabArmsNothing() {
+        var initial = activeTabTornIntoWindowState()
+        if let i = initial.windowIndex(20) { initial.windows[i].isOrderedIn = false }
+        let harness = TestReducerRunner(initial: initial)
+        harness.run([
+            .input(.titleAndTabsRead(wid: 20, tabGroup: .standalone,
+                                     reconcileTabs: true, changedSoFar: false)),
+        ])
+        XCTAssertEqual(harness.violations, [], "convergence: \(harness.trace)")
+        XCTAssertEqual(harness.state.groups.siblingWids(of: 20)?.sorted(), [20, 21, 22])
+        XCTAssertTrue(harness.trace.contains { $0.contains("standalone #20 peer=none") })
+    }
+
+    /// A tab switch can briefly answer standalone too. If AX names the group again before the physical
+    /// confirmation fires, that newer answer wins and membership remains intact.
+    func testTransientStandaloneAnswerCannotSplitARecoveredTabGroup() {
+        let harness = TestReducerRunner(initial: activeTabTornIntoWindowState())
+        harness.run([
+            .input(.titleAndTabsRead(wid: 20, tabGroup: .standalone,
+                                     reconcileTabs: true, changedSoFar: false)),
+            .input(.standaloneTabCheck(wid: 20, siblingWid: 21, attempt: 0)),
+            .input(.titleAndTabsRead(wid: 20,
+                                     tabGroup: .group(titles: ["Escaped", "Remaining", "Background"], token: 42),
+                                     reconcileTabs: true, changedSoFar: false)),
+            .input(.standaloneTabCheck(wid: 20, siblingWid: 21, attempt: 1)),
+        ])
+        XCTAssertEqual(harness.violations, [], "convergence: \(harness.trace)")
+        XCTAssertEqual(harness.state.groups.siblingWids(of: 20)?.sorted(), [20, 21, 22])
+        XCTAssertFalse(harness.trace.contains { $0.contains("standalone split confirmed") })
     }
 
     /// nil-titles path: a group shrinks only on a POSITIVE signal.
@@ -689,7 +796,7 @@ final class TestReducerRunnerTests: XCTestCase {
     /// A minted tab arrives wearing the frame it had as a BACKGROUND tab, and nothing will correct it: the
     /// order-in that moved it onto its parent's frame fires before we ever subscribe to that wid, and a
     /// background tab gets no geometry events. So the group formation has to ask the WindowServer, exactly as
-    /// the tracked half of the same handover does on `joinedSpace`. Live QA T-20 (2026-08-29): clicking a
+    /// the tracked half of the same handover does on `joinedSpace`. Measured live (2026-08-29): clicking a
     /// background window's tab fronted that window, and its new active tab still sat at the OTHER window's
     /// cascade position — a frame every geometry rule then reasons from.
     func testMintedTabSwitchRefreshesTheIncomingFrameFromTheWindowServer() {
@@ -774,7 +881,7 @@ final class TestReducerRunnerTests: XCTestCase {
     /// **The handover names a representative; it must not shrink the group.** When the app's AXTabGroup
     /// titles land in the same `discoveryLanded` as the mint, they group the incoming tab with every tab of
     /// the window — and `formGroup` is exact-set, so re-forming from the inherited pair evicted the rest.
-    /// Live QA C-10 (2026-09-04): a tab opened while the cold scan was still running turned one 4-tab Finder
+    /// Measured live (2026-09-04): a tab opened while the cold scan was still running turned one 4-tab Finder
     /// window into two tiles, because `axTitles` formed [900, 100, 101, 102] and the handover immediately
     /// split it back into [900, 100].
     func testMintedTabSwitchKeepsTheTabsTheTitlesAlreadyGrouped() {
@@ -858,7 +965,7 @@ final class TestReducerRunnerTests: XCTestCase {
     /// in place and reports nothing changed. The reducer then emits no log and, worse, no `.refreshUi`: the
     /// order really did change and the open switcher keeps drawing the old one.
     ///
-    /// Live evidence, 2026-08-25 QA run: an app's process reordered the MRU front onto a Finder window with no
+    /// Live evidence, 2026-08-25: an app's process reordered the MRU front onto a Finder window with no
     /// `zOrder seed reordered` line anywhere in its debug log — the change was visible only in telemetry.
     /// Three investigations dead-ended on that silence.
     func testZOrderReportsWhatItMovedOnAColdModel() {

@@ -22,59 +22,30 @@ func caTransaction(_ body: () -> Void) {
 
 extension NSAppearance {
     func getThemeName() -> AppearanceThemePreference {
-        if #available(macOS 10.14, *) {
-            let appearance = NSApp.effectiveAppearance.name
-            if appearance == .darkAqua || appearance == .vibrantDark {
-                return .dark
-            }
-        }
-        return .light
+        let appearance = NSApp.effectiveAppearance.name
+        return appearance == .darkAqua || appearance == .vibrantDark ? .dark : .light
     }
 
     /// Whether *this* appearance is a dark one (unlike `getThemeName()`, which always reads
     /// `NSApp.effectiveAppearance`). Used by the dynamic-color provider so AppKit can resolve a
     /// color for whatever appearance a view is drawing in.
     var isDarkMode: Bool {
-        if #available(macOS 10.14, *) {
-            return bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-        }
-        return false
+        bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
     }
 }
 
 extension NSColor {
-    // periphery:ignore
-    func toHex() -> String? {
-        guard let rgbColor = usingColorSpace(.deviceRGB) else {
-            return nil
-        }
-        let red = Int(rgbColor.redComponent * 255.0)
-        let green = Int(rgbColor.greenComponent * 255.0)
-        let blue = Int(rgbColor.blueComponent * 255.0)
-        return String(format: "#%02X%02X%02X", red, green, blue)
-    }
-
+    /// Dynamically adapts to changes in System Settings; no need to listen to notifications.
     class var systemAccentColor: NSColor {
-        if #available(macOS 10.14, *) {
-            // dynamically adapts to changes in System Default; no need to listen to notifications
-            return NSColor.controlAccentColor
-        }
-        return NSColor.blue
+        NSColor.controlAccentColor
     }
 
     /// A color that resolves itself per-appearance, so AppKit re-renders it automatically on a
     /// Dark/Light switch with no event observing and no manual repaint (as long as it's drawn by a
     /// view that re-resolves `NSColor`s, e.g. `NSBox`, rather than baked into `layer.backgroundColor`
-    /// via `.cgColor`). Below 10.15 there's no dynamic-provider API, so it resolves once for the
-    /// current app appearance — fine, since 10.13 has no Dark mode and 10.14 is vanishingly rare.
+    /// via `.cgColor`).
     private static func dynamicAppearanceColor(light: NSColor, dark: NSColor) -> NSColor {
-        if #available(macOS 10.15, *) {
-            return NSColor(name: nil) { $0.isDarkMode ? dark : light }
-        }
-        if #available(macOS 10.14, *) {
-            return NSApp.effectiveAppearance.isDarkMode ? dark : light
-        }
-        return light
+        NSColor(name: nil) { $0.isDarkMode ? dark : light }
     }
 
     class var tableBorderColor: NSColor {
@@ -139,24 +110,19 @@ extension NSView {
         }
     }
 
-    func centerFrameInParent(x: Bool = false, y: Bool = false) {
-        let selfSize = (self is NSTextField) ? (self as! NSTextField).fittingSize : frame.size
-        let superviewSize = (superview! is NSTextField) ? (superview! as! NSTextField).fittingSize : superview!.frame.size
-        if (x) {
-            frame.origin.x = ((superviewSize.width - selfSize.width) / 2).rounded()
-        }
-        if (y) {
-            let diff = superviewSize.height - selfSize.height
-            frame.origin.y = (diff / 2).rounded()
-        }
-    }
-
-    func setSubviews(_ views: [NSView]) {
-        subviews = views
-    }
-
     func addSubviews(_ views: [NSView]) {
         subviews = subviews + views
+    }
+
+    /// Observe key / resign-key on this view's CURRENT window. Call from `viewDidMoveToWindow` and store
+    /// the returned tokens: that override fires again on every window change, so the previous window's
+    /// observers have to be dropped first (hence `replacing:`) or they outlive the window they watch.
+    func observeWindowKeyChanges(replacing previous: [NSObjectProtocol], _ onChange: @escaping () -> Void) -> [NSObjectProtocol] {
+        previous.forEach { NotificationCenter.default.removeObserver($0) }
+        guard let window else { return [] }
+        return [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { _ in onChange() }
+        }
     }
 
     func setSubviewAbove(_ view: NSView) {
@@ -216,9 +182,9 @@ extension NSImage {
     }
 
     /// Render an SF Symbol from the bundled `SF Pro Text` subset font as a template NSImage.
-    /// Tint at the call site via `NSImageView.contentTintColor` (macOS 10.14+) or by drawing
-    /// into a tinted container. The image is rasterised at `pointSize`; for crisp Retina output,
-    /// pass the displayed point size — AppKit handles @2x via the backing scale.
+    /// Tint at the call site via `NSImageView.contentTintColor` or by drawing into a tinted
+    /// container. The image is rasterised at `pointSize`; for crisp Retina output, pass the
+    /// displayed point size — AppKit handles @2x via the backing scale.
     ///
     /// The image is cropped to the glyph's ink bounds (the actual visible pixels), not the
     /// font's typographic box. This makes `NSSegmentedControl` and similar containers center
@@ -250,28 +216,9 @@ extension NSImage {
         image.isTemplate = true
         return image
     }
-
-    func tinted(_ color: NSColor) -> NSImage {
-        NSImage(size: size, flipped: false) { rect in
-            color.set()
-            rect.fill()
-            self.draw(in: rect, from: NSRect(origin: .zero, size: self.size), operation: .destinationIn, fraction: 1.0)
-            return true
-        }
-    }
 }
 
 extension CGImage {
-    func nsImage() -> NSImage {
-        return NSImage(cgImage: self, size: size())
-    }
-
-    static func named(_ imageName: String) -> CGImage {
-        let imageURL = Bundle.main.url(forResource: imageName, withExtension: nil)!
-        let imageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil)!
-        return CGImageSourceCreateImageAtIndex(imageSource, 0, nil)!
-    }
-
     static func allNamed(_ imageName: String) -> [CGImage] {
         let imageURL = Bundle.main.url(forResource: imageName, withExtension: nil)!
         let imageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil)!
@@ -288,7 +235,6 @@ extension CGImage {
     func size() -> NSSize {
         return NSSize(width: width, height: height)
     }
-
 }
 
 extension CVPixelBuffer {
@@ -306,9 +252,6 @@ extension pid_t {
         var size = MemoryLayout<kinfo_proc>.stride
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, self]
         sysctl(&mib, u_int(mib.count), &kinfo, &size, nil, 0)
-        _ = withUnsafePointer(to: &kinfo.kp_proc.p_comm) {
-            String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
-        }
         return kinfo.kp_proc.p_stat == SZOMB
     }
 }
@@ -320,19 +263,88 @@ extension String {
     }
 }
 
-extension Int {
-    func compare(_ otherNumber: Int) -> ComparisonResult {
-        return (self as NSNumber).compare(otherNumber as NSNumber)
+/// Whether AltTab's non-switcher windows may take key focus. They are only ever flipped together,
+/// while the switcher's panel is ordered out: a window taking key focus there would steal it from the
+/// app the user is switching to (`App.hideTilesPanelWithoutChangingKeyWindow`).
+enum SecondaryWindows {
+    static var canBecomeKey = true
+}
+
+extension NSTextView {
+    /// A read-only, selectable text view sized to one settings column, for the Markdown-rendered
+    /// panes. Text checking is off: these are static documents, so the checker would only ever
+    /// underline product names.
+    static func makeReadOnlyMarkdownView(_ columnWidth: CGFloat) -> NSTextView {
+        let textView = NSTextView()
+        textView.textContainer!.widthTracksTextView = true
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.drawsBackground = false
+        textView.isSelectable = true
+        textView.isEditable = false
+        textView.enabledTextCheckingTypes = 0
+        textView.frame.size.width = columnWidth
+        return textView
     }
 }
 
-extension Optional where Wrapped == String {
-    func localizedStandardCompare(_ string: String?) -> ComparisonResult {
-        return (self ?? "").localizedStandardCompare(string ?? "")
+extension NSPanel {
+    /// The chrome AltTab's two floating panels (the switcher and the window preview) share.
+    /// `.canJoinAllSpaces` matters because triggering AltTab before or during a Space transition
+    /// otherwise only brings the panel over once the transition ends. The `.unknown` accessibility
+    /// subrole is what keeps these panels out of AltTab's own thumbnails.
+    func applyFloatingPanelChrome() {
+        isFloatingPanel = true
+        animationBehavior = .none
+        hidesOnDeactivate = false
+        titleVisibility = .hidden
+        backgroundColor = .clear
+        collectionBehavior = .canJoinAllSpaces
+        setAccessibilitySubrole(.unknown)
+    }
+}
+
+extension NSSearchField {
+    /// The switcher's search field and the settings sidebar's look the same and both want every
+    /// keystroke rather than a debounced one. `controlSize` tracks the OS: macOS 26 draws search
+    /// fields as a taller pill, and 13 through 15 as the `.large` bezel.
+    func applySearchStyle() {
+        placeholderString = NSLocalizedString("Search", comment: "")
+        sendsSearchStringImmediately = true
+        sendsWholeSearchString = true
+        bezelStyle = .roundedBezel
+        if #available(macOS 26.0, *) {
+            controlSize = .extraLarge
+        } else if #available(macOS 13.0, *) {
+            controlSize = .large
+        }
+    }
+}
+
+extension NotificationCenter {
+    /// Drop a stored observer token. Nilling the token matters as much as the removal: the
+    /// re-subscribe guards elsewhere read `observer == nil` to decide whether to observe again.
+    func removeObserver(_ observer: inout NSObjectProtocol?) {
+        guard let token = observer else { return }
+        removeObserver(token)
+        observer = nil
     }
 }
 
 extension NSWindow {
+    /// The chrome every secondary window shares: a title that only shows in the Window menu and in
+    /// Mission Control, and a window that survives both being closed and the app deactivating.
+    /// `hiddenTitlebar` is what makes the content extend under the traffic lights; the Debug window
+    /// keeps a real titlebar because it is resizable.
+    func applySecondaryWindowChrome(_ title: String, hiddenTitlebar: Bool = true) {
+        self.title = title
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        if hiddenTitlebar {
+            titleVisibility = .hidden
+            titlebarAppearsTransparent = true
+        }
+    }
+
     func hideAppIfLastWindowIsClosed() {
         if (!NSApp.windows.contains { $0.isVisible && $0.className != "NSStatusBarWindow" && $0.windowNumber != windowNumber }) {
             App.shared.hide(nil)
@@ -372,25 +384,6 @@ class ModifierFlags {
     }
 }
 
-extension NSPoint {
-    static func +=(lhs: inout NSPoint, rhs: NSPoint) {
-        lhs.x += rhs.x
-        lhs.y += rhs.y
-    }
-
-    static func +(lhs: NSPoint, rhs: NSPoint) -> NSPoint {
-        return NSPoint(x: lhs.x + rhs.x, y: lhs.y + rhs.y)
-    }
-
-    static func -(lhs: NSPoint, rhs: NSPoint) -> NSPoint {
-        return NSPoint(x: lhs.x - rhs.x, y: lhs.y - rhs.y)
-    }
-
-    static func /(lhs: NSPoint, rhs: Int) -> NSPoint {
-        return NSPoint(x: lhs.x / Double(rhs), y: lhs.y / Double(rhs))
-    }
-}
-
 extension Optional {
     enum Error: Swift.Error {
         case unexpectedNil
@@ -402,37 +395,8 @@ extension Optional {
     }
 }
 
-extension DispatchTimeInterval {
-    var toMilliseconds: Int {
-        switch self {
-            case .seconds(let s): return s / 1000
-            case .milliseconds(let ms): return ms
-            case .microseconds(let us): return us * 1000
-            case .nanoseconds(let ns): return ns * 1_000_000
-            default: return .max
-        }
-    }
-}
-
 extension NSRunningApplication {
     func debugId() -> String { "(pid:\(processIdentifier) \(bundleIdentifier ?? bundleURL?.absoluteString ?? executableURL?.absoluteString ?? localizedName))" }
-}
-
-// 250ms is similar to human delay in processing changes on screen
-// See https://humanbenchmark.com/tests/reactiontime
-let humanPerceptionDelay = DispatchTimeInterval.milliseconds(250)
-
-extension NSTouch.Phase {
-    var readable: String {
-        switch self {
-        case .began:      "began"
-        case .moved:      "moved"
-        case .stationary: "stationary"
-        case .ended:      "ended"
-        case .cancelled:  "cancelled"
-        default:          "unknown"
-        }
-    }
 }
 
 /// this changes the behavior of interpolating optional values (e.g. "\(optionalValue)")
@@ -459,5 +423,27 @@ extension CGEvent {
             nsEvent = NSEvent(cgEvent: self)
         }
         return nsEvent
+    }
+
+    /// Create an event tap and put it on `runLoop`. `tapCreate` returns nil when the Accessibility
+    /// permission isn't granted, and every input tap we install is load-bearing, so that case restarts
+    /// the app rather than running on with a dead tap.
+    static func createTapOrRestart(tap: CGEventTapLocation, options: CGEventTapOptions, eventsOfInterest: CGEventMask,
+                                   callback: @escaping CGEventTapCallBack, runLoop: CFRunLoop?) -> CFMachPort? {
+        guard let port = CGEvent.tapCreate(tap: tap, place: .headInsertEventTap, options: options,
+            eventsOfInterest: eventsOfInterest, callback: callback, userInfo: nil) else {
+            App.restart()
+            return nil
+        }
+        CFRunLoopAddSource(runLoop, CFMachPortCreateRunLoopSource(nil, port, 0), .commonModes)
+        return port
+    }
+
+    /// macOS disables taps on sleep and on a callback timeout (#5723). Put one back in the stream if we
+    /// still want it on. Returns whether it re-enabled, so each caller logs its own wording.
+    static func reEnableTapIfNeeded(_ port: CFMachPort?, wanted: Bool) -> Bool {
+        guard let port, wanted, !CGEvent.tapIsEnabled(tap: port) else { return false }
+        CGEvent.tapEnable(tap: port, enable: true)
+        return true
     }
 }

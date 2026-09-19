@@ -48,8 +48,7 @@ class FeedbackWindow: NSWindow {
     private var updateCheckGeneration: UInt = 0
     private var bugCard: FeedbackKindCard?
     private var enhancementCard: FeedbackKindCard?
-    static var canBecomeKey_ = true
-    override var canBecomeKey: Bool { Self.canBecomeKey_ }
+    override var canBecomeKey: Bool { SecondaryWindows.canBecomeKey }
 
     convenience init() {
         self.init(contentRect: .zero, styleMask: [.titled, .miniaturizable, .closable, .fullSizeContentView], backing: .buffered, defer: false)
@@ -70,11 +69,7 @@ class FeedbackWindow: NSWindow {
     }
 
     private func setupWindow() {
-        title = NSLocalizedString("Send feedback", comment: "")
-        titleVisibility = .hidden
-        titlebarAppearsTransparent = true
-        hidesOnDeactivate = false
-        isReleasedWhenClosed = false
+        applySecondaryWindowChrome(NSLocalizedString("Send feedback", comment: ""))
     }
 
     // MARK: - Draft management
@@ -353,6 +348,7 @@ class FeedbackWindow: NSWindow {
     }
 
     // allow to close with the escape key
+    // periphery:ignore - responder-chain target, reached by Esc rather than by a call
     @objc func cancel(_ sender: Any?) {
         close()
     }
@@ -560,7 +556,7 @@ class FeedbackKindCard: NSButton {
         let image = NSImage.fromSymbol(symbol, pointSize: 28)
         let iv = NSImageView(image: image)
         iv.imageScaling = .scaleProportionallyUpOrDown
-        if #available(macOS 10.14, *) { iv.contentTintColor = tint }
+        iv.contentTintColor = tint
         iv.translatesAutoresizingMaskIntoConstraints = false
         iv.fit(36, 36)
         return iv

@@ -10,10 +10,6 @@ class CustomRecorderControl: RecorderControl {
     /// of sync with the key the write path (`controlWasChanged`) and the conflict detector key off.
     var id: String { identifier!.rawValue }
 
-    convenience init(_ shortcutString: String, _ clearable: Bool, _ id: String) {
-        self.init(Shortcut(keyEquivalent: shortcutString), clearable, id)
-    }
-
     convenience init(_ shortcut: Shortcut?, _ clearable: Bool, _ id: String) {
         self.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
@@ -85,18 +81,11 @@ class CustomRecorderControl: RecorderControl {
         // `conflictLabel` returns nil only for an id with no known action, which can't happen for a
         // real detected conflict; keep the prior plain-string fallback (not a new l10n key).
         let label = ControlsTab.conflictLabel(shortcutAlreadyAssigned) ?? "an unknown action"
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = NSLocalizedString("Conflicting shortcut", comment: "")
-        alert.informativeText = String(format: NSLocalizedString("Shortcut already assigned to: %@", comment: ""),
-                                       label.replacingOccurrences(of: " ", with: "\u{00A0}"))
         // Always offer to resolve it, including when editing a Hold: unassigning a conflicting Trigger
         // clears its "and press" part (the hold itself is never the thing unassigned).
-        alert.addButton(withTitle: NSLocalizedString("Unassign existing shortcut and continue", comment: "")).setAccessibilityFocused(true)
-        let cancelButton = alert.addButton(withTitle: NSLocalizedString("Cancel", comment: ""))
-        cancelButton.keyEquivalent = "\u{1b}"
-        let userChoice = alert.runModal()
-        guard userChoice == .alertFirstButtonReturn else { return }
+        let informativeText = String(format: NSLocalizedString("Shortcut already assigned to: %@", comment: ""),
+                                     ControlsTab.nonBreaking(label))
+        guard ControlsTab.confirmUnassigningConflict(informativeText) else { return }
         switch conflict {
         case .arrow:
             if let cb = ControlsTab.arrowKeysCheckbox {
@@ -138,7 +127,7 @@ class CustomRecorderControl: RecorderControl {
         updateShortcut(self, candidateShortcut, self, id)
     }
 
-    func save(_ candidateShortcut: Shortcut) {
+    func save() {
         LabelAndControl.controlWasChanged(self, id)
         // shortcutChangedCallback is called automatically here
         // setting objectValue also happens automatically
@@ -148,7 +137,7 @@ class CustomRecorderControl: RecorderControl {
 extension CustomRecorderControl: RecorderControlDelegate {
     func recorderControl(_ control: RecorderControl, canRecord shortcut: Shortcut) -> Bool {
         switch CustomRecorderControlTestable.isShortcutAcceptable(id, shortcut) {
-        case .accepted: save(shortcut)
+        case .accepted: save()
         case .modifiersOnlyButContainsKeycode: return false
         case .conflictWithExistingShortcut(let s): alertIfSameShortcutAlreadyAssigned(shortcut, s)
         case .reservedByMacos(let s): alertIfShortcutReservedByMacos(shortcut, s)

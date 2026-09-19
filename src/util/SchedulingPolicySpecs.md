@@ -39,7 +39,7 @@ Mirrors `SchedulingPolicyTests.swift` 1:1.
 
 The situation used to be recorded BEFORE the scan ran and then refused forever, so one fruitless attempt — the
 app's AX tree not ready yet, the classic at launch — permanently gave up on it, with no retry and no later
-trigger. Measured over a live QA run (2026-07-30): 82 tab reads named untracked tabs and the scan adopted
+trigger. Measured live (2026-07-30): 82 tab reads named untracked tabs and the scan adopted
 NOTHING, against 57 adoptions in a run whose first attempt happened to land. So the outcome is what gets
 recorded, and a situation gets a small budget instead of exactly one shot.
 
@@ -66,7 +66,7 @@ recorded, and a situation gets a small budget instead of exactly one shot.
   they are that window's tabs. Those are a find for a DIFFERENT requester, so stepping the shared cursor past
   them made two tab groups of one app permanently uncrossable — measured on a cold launch with Finder holding
   two 3-tab groups, each requester's sweep kept finding only the other's tabs and six tabs came back as the
-  two that were active (QA C-05). A deferred candidate rewinds the cursor onto itself; the attempt budget
+  two that were active (measured live). A deferred candidate rewinds the cursor onto itself; the attempt budget
   above still bounds the whole thing.
 
 ### D. SurfaceAcquisitionPolicy
@@ -86,6 +86,11 @@ this policy still bounds repeated batches whose unresolved members remain unchan
 **Only the periodic sweep is gated.** A surface that changes state reaches `Applications.discoverWindow` on
 its own event, and that path uses the cheap `kAXWindows` route with no brute-force, so refusing the sweep
 cannot make a window undiscoverable.
+
+**A window that changes nothing is the case this budget cannot judge alone**, and the caller owns that half:
+it records no failure reached while the screen is locked, and drops a process's records once it starts
+answering accessibility again. Without those, a wake wrote off every window AltTab did not already hold an
+element for, and a quiescent background app never moved its window set to earn another attempt (#6031).
 
 - **testAFreshSurfaceIsAlwaysAttempted** — a surface with no failure on record is swept, as before.
 - **testAFailedSurfaceIsRetriedWithinTheBudget** — a failure is not a verdict: the situation keeps its three

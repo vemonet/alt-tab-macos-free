@@ -90,7 +90,8 @@ class Windows {
     }
 
     static func updatesBeforeShowing() -> Bool {
-        if MissionControl.state() == .showAllWindows || MissionControl.state() == .showFrontWindows { return false }
+        let missionControl = MissionControl.state()
+        if missionControl == .showAllWindows || missionControl == .showFrontWindows { return false }
         if list.isEmpty { return true }
         // Space/screen membership is refreshed OFF the hot path now (#5721): reactively on Space change
         // (WindowServerEvents) and screen change (ScreensEvents), and after show in
@@ -205,7 +206,7 @@ class Windows {
         }
         // `space=` is the Space the tiles below were filtered and sorted AGAINST, at the instant of this
         // render. Without it a capture cannot tell a wrong list from a right list judged against the Space
-        // the user had just left, which is the whole of #5864 and what the QA Space tests assert on.
+        // the user had just left, which is the whole of #5864 and what the live Space tests assert on.
         Logger.debug { "show[\(context)] sel=\(selected) space=\(Spaces.currentSpaceId) "
             + "tiles=\(tiles.joined(separator: " "))" }
     }
@@ -472,7 +473,7 @@ class Windows {
     ///
     /// AltTab launches into a desktop it did not watch being built, so it has no focus history and has to
     /// guess; screen stacking is that guess. The guess used to be fired once a second after launch and once
-    /// more on the first summon. Measured 2026-08-25 across four QA processes: the startup inventory it is
+    /// more on the first summon. Measured 2026-08-25 across four processes: the startup inventory it is
     /// meant to rank lands ~280ms AFTER that timer, because `manuallyRefreshAllWindows` is asynchronous and
     /// `sortByLevel` was called on the line below it. So the launch guess ranked a model that was still
     /// empty, and the only call that did anything was the first-summon one — which answers after that
@@ -660,7 +661,7 @@ class Windows {
     ///
     /// **Only an admission with no element is dropped.** A window described even once is not held on
     /// attention, so an app that wedges LATER keeps every window it had, and the app itself stays reachable
-    /// because losing its last window restores its icon placeholder. Both are pinned live by the QA suite's
+    /// because losing its last window restores its icon placeholder. Both are pinned live by the
     /// WL-11 and WL-12, and this rule's own three shapes by its WL-19, WL-20 and WL-21.
     ///
     /// Not permanent either. The failure record is keyed to the app's window set, so any window or tab change

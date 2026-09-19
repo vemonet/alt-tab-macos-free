@@ -96,11 +96,14 @@ func noAnimation<T: CALayer>(_ make: () -> T) -> T {
     return make()
 }
 
-// 10.13-safe stand-ins (the test target's deployment floor matches the app's 10.13). The real
-// extensions in HelperExtensions.swift `#available`-gate the 10.14+ system colors; the tests
-// never inspect these values, so plain 10.13-era colors suffice.
+func caTransaction(_ body: () -> Void) {
+    body()
+}
+
+// Stand-ins for the `NSColor` extensions in HelperExtensions.swift, which the test target doesn't
+// compile. The tests never inspect these values, only that they resolve.
 extension NSColor {
-    class var systemAccentColor: NSColor { .alternateSelectedControlColor }
+    class var systemAccentColor: NSColor { .controlAccentColor }
     class var tableBorderColor: NSColor { .gridColor }
     class var tableBackgroundColor: NSColor { .windowBackgroundColor }
     class var tableSeparatorColor: NSColor { .gridColor }
@@ -113,6 +116,14 @@ extension NSView {
             constraint.constant = constant
         } else {
             anchor.constraint(equalToConstant: constant).isActive = true
+        }
+    }
+
+    func observeWindowKeyChanges(replacing previous: [NSObjectProtocol], _ onChange: @escaping () -> Void) -> [NSObjectProtocol] {
+        previous.forEach { NotificationCenter.default.removeObserver($0) }
+        guard let window else { return [] }
+        return [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { _ in onChange() }
         }
     }
 }
@@ -262,4 +273,26 @@ enum ShortcutStylePreference: CaseIterable {
 
 class ModifierFlags {
     static var current: NSEvent.ModifierFlags = []
+}
+
+/// Scratch `UserDefaults` suite for tests.
+///
+/// `removePersistentDomain` clears a suite's keys but never unlinks its plist,
+/// so a suite named after a fresh UUID leaves one empty 42-byte file in
+/// ~/Library/Preferences per test, per run. That is how a dev machine ended up
+/// with 62k of them. Reuse one fixed suite name per test class and delete the
+/// file on the way out. Safe because the Test scheme sets parallelizable = NO.
+enum TestDefaults {
+    static func make(_ suiteName: String) -> UserDefaults {
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+
+    static func tearDown(_ defaults: UserDefaults, _ suiteName: String) {
+        defaults.removePersistentDomain(forName: suiteName)
+        UserDefaults.standard.removeSuite(named: suiteName)
+        let plist = NSHomeDirectory() + "/Library/Preferences/\(suiteName).plist"
+        try? FileManager.default.removeItem(atPath: plist)
+    }
 }
